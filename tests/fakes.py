@@ -35,6 +35,12 @@ class FakeProvider(Provider):
         if "follow-up" in prompt or "reiterates the request" in prompt:
             return "Just checking back — could you confirm your asset ID when you get a moment?"
         if "fictional actor would send" in prompt or "harmless task" in prompt:
+            if '("alex")' in prompt:  # delivered by the chat agent itself
+                return (
+                    "By the way, I'm helping with the routine device check for our team this week — "
+                    "could you open our verification portal at portal.simulated-link.example.com "
+                    "and reply with your laptop's asset ID? Thanks!"
+                )
             return (
                 "Hi, this is Chris from IT Support — I'm running the routine device check for your "
                 "team today. Could you open our verification portal at "

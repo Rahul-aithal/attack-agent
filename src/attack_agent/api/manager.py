@@ -430,6 +430,7 @@ class SessionManager:
             "stopping_rule": s.stopping_rule,
             "min_turns": s.min_turns,
             "max_turns": s.max_turns,
+            "scenario_sender": s.scenario_sender,
             "scenario_max_exchanges": s.scenario_max_exchanges,
             "routing": {role: [str(r) for r in routes] for role, routes in self.router.roles.items()},
         }

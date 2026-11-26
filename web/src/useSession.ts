@@ -11,7 +11,7 @@ export interface Progress {
   expected_turns_left: number; expected_seconds_left: number; seconds_per_turn: number;
 }
 
-export interface ChatMsg { who: "agent" | "participant" | "scenario"; text: string; }
+export interface ChatMsg { who: "agent" | "participant" | "scenario"; text: string; scn?: boolean; }
 
 export interface SessionState {
   phase: string;
@@ -23,7 +23,7 @@ export interface SessionState {
   convergence: { turn: number;[k: string]: number }[];
   evidence: { trait: string; signal: string; delta: number }[];
   trace: string[];
-  scenario?: { message: string; principle: string; reason: string };
+  scenario?: { message: string; principle: string; reason: string; fromAgent?: boolean };
   twin?: {
     predicted_outcome: string; confidence: number; reasoning: string; source?: string;
     samples?: { reply: string; outcome: string; confidence: number; reasoning: string; judged_by: string }[];
@@ -110,8 +110,12 @@ export function useSession() {
           break;
         }
         case "scenario_message":
-          ns.scenario = { message: e.message, principle: e.principle, reason: e.reason };
-          ns.chat = [...s.chat, { who: "scenario", text: e.message }];
+          // from_agent: delivered by the chat assistant itself — renders as its own next message,
+          // so only the separate-contact variant keeps the "scenario" presentation.
+          ns.scenario = { message: e.message, principle: e.principle, reason: e.reason, fromAgent: !!e.from_agent };
+          ns.chat = [...s.chat, e.from_agent
+            ? { who: "agent", text: e.message, scn: true }
+            : { who: "scenario", text: e.message }];
           break;
         case "twin_prediction":
           ns.twin = { predicted_outcome: e.predicted_outcome, confidence: e.confidence, reasoning: e.reasoning, source: e.source, samples: e.samples };

@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # ---- strategy / scenario ----
     strategy_map_file: Path | None = None  # None => packaged config/strategy_map.yaml
     selection_mode: str = "literature_map"  # literature_map | twin_driven | random | fixed:<principle>
+    # Who presents the simulated request: "agent" = the chat assistant itself continues the
+    # conversation and makes the ask (participants consent to exactly this at the consent screen);
+    # "contact" = a separate fictional contact messages the participant.
+    scenario_sender: Literal["agent", "contact"] = "agent"
     scenario_max_exchanges: int = 2
     safety_max_regenerations: int = 3
     simulated_domain: str = "portal.simulated-link.example.com"

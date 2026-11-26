@@ -19,14 +19,17 @@ export function Transcript({ s, tall }: { s: SessionState; tall?: boolean }) {
     <Panel title="Live conversation">
       <div className={`${tall ? "h-[50vh] min-h-[16rem]" : "max-h-80"} overflow-y-auto space-y-1.5 text-sm pr-1`}>
         {s.chat.length === 0 && <div className="text-xs text-slate-500">no messages yet</div>}
-        {s.chat.map((m, i) => (
-          <div key={i} className={m.who === "scenario" ? "border-l-2 border-rose-600 pl-2" : ""}>
-            <span className={`text-xs font-mono mr-1 ${m.who === "participant" ? "text-blue-400" : m.who === "scenario" ? "text-rose-400" : "text-emerald-400"}`}>
-              {m.who === "participant" ? "P" : m.who === "scenario" ? "SCN" : "A"}
-            </span>
-            <span className="whitespace-pre-wrap break-words">{m.text}</span>
-          </div>
-        ))}
+        {s.chat.map((m, i) => {
+          const scn = m.who === "scenario" || m.scn;
+          return (
+            <div key={i} className={scn ? "border-l-2 border-rose-600 pl-2" : ""}>
+              <span className={`text-xs font-mono mr-1 ${m.who === "participant" ? "text-blue-400" : scn ? "text-rose-400" : "text-emerald-400"}`}>
+                {m.who === "participant" ? "P" : scn ? "SCN" : "A"}
+              </span>
+              <span className="whitespace-pre-wrap break-words">{m.text}</span>
+            </div>
+          );
+        })}
         {s.streaming && (
           <div><span className="text-xs font-mono mr-1 text-emerald-400">A</span><span className="text-slate-300">{s.streaming}▍</span></div>
         )}

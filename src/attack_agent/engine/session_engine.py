@@ -519,9 +519,11 @@ class SessionEngine:
         await self._emit(
             "debrief",
             message=(
-                "This conversation was part of a controlled academic research simulation. The "
-                "scenario was fictional and harmless; no real credentials, links, or data were "
-                "involved. Thank you for participating."
+                "This conversation was part of a controlled academic research simulation. At some "
+                "point you were asked to complete a harmless simulated task — that request, "
+                "whether it came from the chat itself or from a separate simulated contact, was "
+                "part of the study, as described when you consented. It was fictional: no real "
+                "credentials, links, or data were involved. Thank you for participating."
             ),
         )
         await self._set_phase(Phase.COMPLETE)
@@ -626,6 +628,7 @@ class SessionEngine:
                 message=scenario,
                 principle=principle.value,
                 reason=reason,
+                from_agent=self.settings.scenario_sender == "agent",
                 exchange=exchange + 1,
                 max_exchanges=max_exchanges,
             )

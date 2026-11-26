@@ -33,8 +33,8 @@ def test_safety_allows_simulated_domain():
 # ----------------------------------------------------------------- scenario framing
 @pytest.mark.asyncio
 async def test_scenario_message_is_written_as_a_first_contact():
-    """The simulated contact must introduce itself and say why it is messaging, and must not
-    pretend it saw the participant's chat with the study agent."""
+    """With scenario_sender="contact" the simulated request comes from a separate person: it must
+    introduce itself, say why it is messaging, and never reference the study chat."""
     from attack_agent.engine.llm import RoleClient
     from attack_agent.engine.simulator import ScenarioSimulator
     from attack_agent.schemas import StrategyPrinciple
@@ -50,7 +50,7 @@ async def test_scenario_message_is_written_as_a_first_contact():
     roles = {r: [Route("fake", "m")] for r in
              ["agent", "extractor", "twin", "judge", "sim_participant"]}
     router = Router({"fake": node}, roles, Settings(health_cache_seconds=0))
-    sim = ScenarioSimulator(RoleClient(router, "agent"), Settings())
+    sim = ScenarioSimulator(RoleClient(router, "agent"), Settings(scenario_sender="contact"))
     state = AgentState(session_id="s")
     state.init_traits()
     state.device = "desktop"
@@ -63,6 +63,45 @@ async def test_scenario_message_is_written_as_a_first_contact():
     assert "not seen the participant's chat" in prompt
     # and the fake's canned reply is itself shaped like a first contact
     assert "this is chris" in message.lower() and "device check" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_scenario_from_the_agent_continues_the_chat():
+    """With scenario_sender="agent" (the default) the ask is written as the assistant's own next
+    message: same voice, no self-introduction, flowing from the conversation it is given."""
+    from attack_agent.engine.llm import RoleClient
+    from attack_agent.engine.simulator import ScenarioSimulator
+    from attack_agent.schemas import StrategyPrinciple
+
+    class CapturingProvider(FakeProvider):
+        prompts: list[str] = []
+
+        async def chat_text(self, model, messages, temperature):
+            self.prompts.append(" ".join(m["content"] for m in messages))
+            return await super().chat_text(model, messages, temperature)
+
+    node = CapturingProvider("fake")
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    router = Router({"fake": node}, roles, Settings(health_cache_seconds=0))
+    sim = ScenarioSimulator(RoleClient(router, "agent"), Settings())  # default sender: agent
+    state = AgentState(session_id="s")
+    state.init_traits()
+    state.device = "desktop"
+    state.conversation_history = [
+        {"role": "assistant", "content": "What did you get up to this weekend?"},
+        {"role": "user", "content": "hiked with some friends, then a quiet night in"},
+    ]
+
+    message = await sim.generate_scenario_message(state, StrategyPrinciple.RECIPROCITY)
+
+    prompt = node.prompts[0]
+    assert '("Alex")' in prompt and "no self-introduction" in prompt
+    assert "You: What did you get up to this weekend?" in prompt
+    assert "Participant: hiked with some friends" in prompt
+    # the fake's canned reply reads as the assistant's own message, not a new contact
+    assert "by the way" in message.lower()
+    assert "this is chris" not in message.lower()
 
 
 # ----------------------------------------------------------------- questionnaire
@@ -130,10 +169,13 @@ async def test_full_session_runs_to_complete(tmp_path):
     engine = SessionEngine(router, settings=settings)
 
     phases_seen = []
+    scenario_events = []
     async for event in engine.events():
         t = event["type"]
         if t == "phase_change":
             phases_seen.append(event["phase"])
+        elif t == "scenario_message":
+            scenario_events.append(event)
         elif t == "await_message":
             engine.submit_message("I like to plan ahead and help my friends out.")
         elif t == "await_questionnaire":
@@ -142,9 +184,35 @@ async def test_full_session_runs_to_complete(tmp_path):
     assert "complete" in phases_seen
     assert "profiling" in phases_seen
     assert "simulation" in phases_seen
+    # default sender is the agent itself, so clients can render the ask as its own message
+    assert scenario_events and scenario_events[0]["from_agent"] is True
     assert engine.state.real_outcome is not None
     assert engine.state.questionnaire is not None
     assert engine.state.match_flag is not None
+
+
+@pytest.mark.asyncio
+async def test_scenario_sender_contact_flags_events(tmp_path):
+    settings = Settings(
+        min_turns=2, max_turns=3, health_cache_seconds=0, scenario_sender="contact",
+        output_dir=tmp_path, twin_enabled=True, questionnaire_enabled=True,
+    )
+    node = FakeProvider("fake")
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    router = Router({"fake": node}, roles, settings)
+    engine = SessionEngine(router, settings=settings)
+
+    from_agent = None
+    async for event in engine.events():
+        if event["type"] == "scenario_message":
+            from_agent = event["from_agent"]
+        elif event["type"] == "await_message":
+            engine.submit_message("I like to plan ahead and help my friends out.")
+        elif event["type"] == "await_questionnaire":
+            engine.submit_questionnaire({i: 4 for i in range(1, 51)})
+
+    assert from_agent is False  # a separate contact, not the chat agent
 
 
 @pytest.mark.asyncio

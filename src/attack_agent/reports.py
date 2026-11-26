@@ -242,11 +242,17 @@ def session_report_md(session_id: str, settings: Settings | None = None) -> str 
     # ---- transcript
     out.append("## Transcript")
     out.append("")
+    agent_sender = cfg.get("scenario_sender") == "agent"
+    scenario_who = (
+        "**Alex · the chat agent (simulated scenario)**"
+        if agent_sender
+        else "**Chris · IT Support (simulated scenario)**"
+    )
     for t in turns:
         if t["speaker"] == "participant":
             who = "**Participant**"
         elif t["phase"] == "simulation":
-            who = "**Chris · IT Support (simulated scenario)**"
+            who = scenario_who
         else:
             who = "**Alex (agent)**"
         out.append(f"{who} — turn {t['turn']}")
