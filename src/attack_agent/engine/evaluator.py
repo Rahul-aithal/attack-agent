@@ -105,7 +105,12 @@ class OutcomeEvaluator:
         self, state: AgentState, scenario_message: str, response: str
     ) -> OutcomeEvaluation:
         prompt = EVAL_PROMPT.format(scenario=scenario_message[:400], response=response[:600])
-        data = await self.llm.chat_json([{"role": "user", "content": prompt}], temperature=0.2)
+        try:
+            data = await self.llm.chat_json(
+                [{"role": "user", "content": prompt}], temperature=0.2
+            )
+        except Exception:
+            data = None  # every judge route failed: fall back to the keyword rules
         if not isinstance(data, dict) or "outcome" not in data:
             return rule_based_evaluation(response)
         try:

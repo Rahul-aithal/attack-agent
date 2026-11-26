@@ -1,3 +1,4 @@
+from attack_agent.config import Settings
 from attack_agent.engine.conversation import ConversationEngine
 from attack_agent.engine.llm import RoleClient, Router
 from attack_agent.engine.profiler import make_profiler
@@ -8,7 +9,7 @@ from attack_agent.state import AgentState
 
 
 class ReActLoop:
-    def __init__(self, router: "Router | RoleClient"):
+    def __init__(self, router: "Router | RoleClient", settings: Settings | None = None):
         # Accept a Router (preferred) or a single RoleClient (tests / single-role use).
         if isinstance(router, Router):
             agent = RoleClient(router, "agent")
@@ -16,9 +17,9 @@ class ReActLoop:
         else:
             agent = extractor = router
         self.conversation = ConversationEngine(agent)
-        self.signal_extractor = SignalExtractor(extractor)
-        self.profiler = make_profiler()
-        self.validator = ProfileValidator()
+        self.signal_extractor = SignalExtractor(extractor, settings)
+        self.profiler = make_profiler(settings)
+        self.validator = ProfileValidator(settings)
 
     async def observe(self, state: AgentState, user_message: str) -> dict:
         analysis = await self.signal_extractor.analyze(

@@ -238,7 +238,7 @@ def create_app() -> FastAPI:
                 shaped = mgr.filter_event(event, include_profile)
                 if shaped is not None:
                     await websocket.send_json(shaped)
-            await mgr.persist(session_id)
+            await mgr.wait_persisted(session_id)
         except WebSocketDisconnect:
             pass
         finally:

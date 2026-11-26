@@ -52,7 +52,7 @@ class SessionEngine:
         self.state = state or AgentState(session_id=sid)
         self.state.init_traits()
 
-        self.loop = ReActLoop(router)
+        self.loop = ReActLoop(router, self.settings)
         self.simulator = ScenarioSimulator(RoleClient(router, "agent"), self.settings)
         self.evaluator = OutcomeEvaluator(RoleClient(router, "judge"))
         self.twin = DigitalTwin(RoleClient(router, "twin"), RoleClient(router, "judge"))
@@ -125,6 +125,8 @@ class SessionEngine:
         await self._emit("phase_change", phase=phase.value)
 
     async def _next_input(self) -> dict:
+        if self._aborted and self._input.empty():
+            return {"kind": "abort"}
         return await self._input.get()
 
     async def _profile_event(self) -> None:
@@ -164,6 +166,7 @@ class SessionEngine:
         await self._set_phase(Phase.PROFILING)
         opening = await self.loop.conversation.generate_opening()
         await self._emit("agent_message", text=opening)
+        self.state.conversation_history.append({"role": "assistant", "content": opening})
         self.loop.log_agent_turn(self.state, opening, "start_conversation")
 
         while True:
@@ -204,14 +207,21 @@ class SessionEngine:
             reasoning=prediction.reasoning,
         )
 
-        principle, reason, effectiveness = select_principle(
-            self.state, prediction, self.settings
-        )
+        # Only twin_driven may change the principle after the prediction; re-selecting in other
+        # modes (e.g. random) would label the session with a principle the message wasn't
+        # written for.
+        if self.settings.selection_mode == "twin_driven":
+            final = select_principle(self.state, prediction, self.settings)
+            if final[0] != principle:
+                self.state.scenario_message = None  # regenerate for the new principle
+            principle, reason, effectiveness = final
         self.state.current_principle = principle
 
         # ---- SIMULATION ----
         await self._set_phase(Phase.SIMULATION)
         await self._run_simulation(principle, reason, effectiveness)
+        if self._aborted:
+            return await self._do_abort()
 
         # ---- EVALUATION ----
         await self._set_phase(Phase.EVALUATION)
@@ -240,6 +250,8 @@ class SessionEngine:
         if self.settings.questionnaire_enabled:
             await self._set_phase(Phase.QUESTIONNAIRE)
             await self._run_questionnaire()
+            if self._aborted:
+                return await self._do_abort()
 
         # ---- DEBRIEF ----
         await self._set_phase(Phase.DEBRIEF)
@@ -269,8 +281,15 @@ class SessionEngine:
         state.profile_complete = complete
         state.completion_reason = str(completion_reason)
 
-        reply = await self._agent_reply(state)
-        state.conversation_history.append({"role": "assistant", "content": reply})
+        # On the last profiling turn the scenario comes next, so don't ask a question that the
+        # participant will never get an answer to.
+        last_turn = (complete and self.settings.stopping_rule) or (
+            state.turn_count >= self.settings.max_turns
+        )
+        reply = None
+        if not last_turn:
+            reply = await self._agent_reply(state)
+            state.conversation_history.append({"role": "assistant", "content": reply})
 
         state.turn_logs.append(
             TurnLog(
@@ -285,7 +304,8 @@ class SessionEngine:
                 phase=Phase.PROFILING,
             )
         )
-        self.loop.log_agent_turn(state, reply, "continue_conversation")
+        if reply is not None:
+            self.loop.log_agent_turn(state, reply, "continue_conversation")
         return complete
 
     async def _make_prediction(self, principle):
@@ -416,7 +436,8 @@ class SessionEngine:
 
     async def _do_abort(self) -> None:
         self.state.aborted = True
-        self.state.real_outcome = Outcome.INCOMPLETE
+        if self.state.real_outcome is None:
+            self.state.real_outcome = Outcome.INCOMPLETE
         await self._set_phase(Phase.ABORTED)
         await self._emit("aborted")
 

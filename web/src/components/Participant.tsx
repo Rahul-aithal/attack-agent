@@ -106,7 +106,7 @@ export function Participant() {
             ))}
           </div>
           <div className="mt-4">
-            <Button onClick={() => sendQuestionnaire(responses)} disabled={Object.keys(responses).length === 0}>
+            <Button onClick={() => sendQuestionnaire(responses)} disabled={items.length === 0 || Object.keys(responses).length < items.length}>
               Submit ({Object.keys(responses).length}/{items.length})
             </Button>
           </div>

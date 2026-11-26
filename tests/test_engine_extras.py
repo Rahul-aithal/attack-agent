@@ -167,3 +167,65 @@ async def test_observer_sees_every_event_including_late_join(tmp_path):
     assert "complete" in participant_events
     assert observer_events == participant_events
     assert "twin_prediction" in observer_events
+
+
+def _fake_engine(tmp_path, **overrides):
+    settings = Settings(
+        min_turns=2, max_turns=3, health_cache_seconds=0, output_dir=tmp_path,
+        twin_enabled=True, questionnaire_enabled=True, **overrides,
+    )
+    node = FakeProvider("fake")
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    return SessionEngine(Router({"fake": node}, roles, settings), settings=settings)
+
+
+@pytest.mark.asyncio
+async def test_abort_during_scenario_finishes_instead_of_hanging(tmp_path):
+    import asyncio
+
+    engine = _fake_engine(tmp_path)
+    phases: list[str] = []
+
+    async def drive():
+        async for event in engine.events():
+            if event["type"] == "phase_change":
+                phases.append(event["phase"])
+            elif event["type"] == "await_message":
+                if event["context"] == "scenario":
+                    engine.abort()  # participant closes the tab at the fake request
+                else:
+                    engine.submit_message("I plan ahead and love helping people")
+
+    await asyncio.wait_for(drive(), timeout=10)
+    assert phases[-1] == "aborted"
+    assert "questionnaire" not in phases
+    assert engine.state.aborted
+
+
+@pytest.mark.asyncio
+async def test_last_profiling_turn_has_no_dangling_agent_question(tmp_path):
+    engine = _fake_engine(tmp_path, stopping_rule=False)  # always runs to max_turns=3
+    agent_msgs_in_profiling = 0
+    phase = ""
+    async for event in engine.events():
+        if event["type"] == "phase_change":
+            phase = event["phase"]
+        elif event["type"] == "agent_message" and phase == "profiling":
+            agent_msgs_in_profiling += 1
+        elif event["type"] == "await_message":
+            engine.submit_message("I plan ahead and love helping people")
+        elif event["type"] == "await_questionnaire":
+            engine.submit_questionnaire({i: 3 for i in range(1, 51)})
+    # opening + replies to turns 1 and 2; turn 3 is final, so no reply
+    assert agent_msgs_in_profiling == 3
+    assert engine.state.conversation_history[0]["role"] == "assistant"  # opening kept
+
+
+def test_session_settings_reach_the_react_loop(tmp_path):
+    from attack_agent.engine.profiler import V1Profiler
+
+    engine = _fake_engine(tmp_path, profiler_version="v1", extractor_mode="keyword")
+    assert isinstance(engine.loop.profiler, V1Profiler)
+    assert engine.loop.signal_extractor.settings.extractor_mode == "keyword"
+    assert engine.loop.validator.settings.max_turns == 3

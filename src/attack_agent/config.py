@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # ---- profiling stop rule ----
     min_turns: int = 8
-    max_turns: int = 20
+    max_turns: int = 30
     trait_confidence_threshold: float = 0.5
     min_traits_above_threshold: int = 4
     avg_confidence_threshold: float = 0.55

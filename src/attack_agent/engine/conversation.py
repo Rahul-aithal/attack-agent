@@ -20,9 +20,6 @@ Rules:
 - Do not repeat questions you already asked.
 - This turn, naturally steer the topic toward: {focus}
 
-Conversation so far:
-{history}
-
 Write your next message only. No quotes, no labels."""
 
 OPENING_PROMPT = """You are "Alex", a friendly conversational partner in a casual chat.
@@ -52,14 +49,7 @@ class ConversationEngine:
         hints = "; ".join(TRAIT_TOPIC_HINTS[t] for t in focus) if focus else (
             "whatever keeps the conversation flowing naturally"
         )
-        history_text = "\n".join(
-            f"{'Participant' if m['role'] == 'user' else 'Alex'}: {m['content']}"
-            for m in state.conversation_history[-10:]
-        )
-        system = REPLY_SYSTEM_PROMPT.format(
-            focus=hints,
-            history=history_text or "(conversation just started)",
-        )
+        system = REPLY_SYSTEM_PROMPT.format(focus=hints)
         return [{"role": "system", "content": system}] + state.conversation_history[-10:]
 
     async def generate_reply(self, state: AgentState) -> str:

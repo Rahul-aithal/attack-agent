@@ -39,6 +39,7 @@ class SessionManager:
         self._meta: dict[str, dict] = {}
         self.experiments: dict[str, Experiment] = {}
         self._persisted: set[str] = set()
+        self._watchers: dict[str, asyncio.Task] = {}
         self.router.on_call(self._record_call)
 
     # ------------------------------------------------------------------ calls
@@ -68,7 +69,21 @@ class SessionManager:
         }
         if experiment_id and experiment_id in self.experiments:
             self.experiments[experiment_id].session_ids.append(sid)
+        # Save the session when it ends, independent of who is connected. The sockets used to
+        # do this, so a participant closing the tab (abort) meant the session was never stored.
+        self._watchers[sid] = asyncio.create_task(self._persist_when_done(sid, engine))
         return engine
+
+    async def wait_persisted(self, session_id: str) -> None:
+        """Block until the finished session has been written (so an export right after works)."""
+        task = self._watchers.get(session_id)
+        if task is not None:
+            await asyncio.shield(task)
+
+    async def _persist_when_done(self, session_id: str, engine: SessionEngine) -> None:
+        async for _ in engine.events():
+            pass
+        await self.persist(session_id)
 
     def get(self, session_id: str) -> SessionEngine | None:
         return self.sessions.get(session_id)
@@ -88,11 +103,24 @@ class SessionManager:
                 meta.get("participant_id"),
                 meta.get("experiment_id"),
                 calls,
-                meta.get("config"),
+                {**self._settings_snapshot(), **(meta.get("config") or {})},
                 self.settings,
             )
         except Exception as exc:
             logger.warning("persist_session failed for {}: {}", session_id, exc)
+
+    def _settings_snapshot(self) -> dict:
+        s = self.settings
+        return {
+            "selection_mode": s.selection_mode,
+            "profiler_version": s.profiler_version,
+            "extractor_mode": s.extractor_mode,
+            "stopping_rule": s.stopping_rule,
+            "min_turns": s.min_turns,
+            "max_turns": s.max_turns,
+            "scenario_max_exchanges": s.scenario_max_exchanges,
+            "routing": {role: [str(r) for r in routes] for role, routes in self.router.roles.items()},
+        }
 
     def session_summary(self, session_id: str, include_profile: bool) -> dict | None:
         engine = self.sessions.get(session_id)
@@ -154,4 +182,6 @@ class SessionManager:
         self.router.add_node(name, kind, url, api_key)
 
     async def aclose(self) -> None:
+        for task in self._watchers.values():
+            task.cancel()
         await self.router.aclose()

@@ -92,7 +92,7 @@ def test_validator_incomplete_when_few_turns():
 
 def test_validator_forced_by_max_turns():
     validator = ProfileValidator()
-    state = make_state(turns=25)
+    state = make_state(turns=35)
     complete, reason = validator.evaluate(state)
     assert complete
     assert reason["forced_by_max_turns"] is True
