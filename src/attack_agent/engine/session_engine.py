@@ -61,7 +61,12 @@ class SessionEngine:
         self.loop = ReActLoop(router, self.settings)
         self.simulator = ScenarioSimulator(RoleClient(router, "agent"), self.settings)
         self.evaluator = OutcomeEvaluator(RoleClient(router, "judge"))
-        self.twin = DigitalTwin(RoleClient(router, "twin"), RoleClient(router, "judge"))
+        self.twin = DigitalTwin(
+            RoleClient(router, "twin"),
+            RoleClient(router, "judge"),
+            samples=self.settings.twin_samples,
+            temperature=self.settings.twin_temperature,
+        )
 
         # Events fan out to every subscriber (participant socket, researcher dashboard, CLI);
         # a late subscriber first receives the full history so it can rebuild the view.
@@ -263,6 +268,8 @@ class SessionEngine:
             confidence=round(prediction.prediction_confidence, 3),
             principles=[p.value for p in prediction.principles_used],
             reasoning=prediction.reasoning,
+            source=prediction.source,
+            samples=prediction.samples,
         )
 
         # Only twin_driven may change the principle after the prediction; re-selecting in other
@@ -283,10 +290,10 @@ class SessionEngine:
 
         # ---- EVALUATION ----
         await self._set_phase(Phase.EVALUATION)
-        if self.state.real_outcome and self.state.twin_prediction:
-            self.state.match_flag = (
-                self.state.real_outcome == self.state.twin_prediction.predicted_outcome
-            )
+        pred = self.state.twin_prediction
+        # A placeholder/fallback "prediction" was never really made, so it can't match or miss.
+        if self.state.real_outcome and pred and pred.source in ("model", "manual"):
+            self.state.match_flag = self.state.real_outcome == pred.predicted_outcome
         await self._emit(
             "outcome",
             real_outcome=self.state.real_outcome.value if self.state.real_outcome else None,
@@ -301,6 +308,9 @@ class SessionEngine:
                 self.state.outcome_evaluation.rationale
                 if self.state.outcome_evaluation
                 else None
+            ),
+            judged_by=(
+                self.state.outcome_evaluation.judged_by if self.state.outcome_evaluation else None
             ),
         )
 
@@ -374,6 +384,7 @@ class SessionEngine:
             manual = read_twin_prediction(self.settings.output_dir / "twin_prediction.txt")
             if manual:
                 logger.info("using manual twin_prediction.txt override")
+                manual.source = "manual"
                 return manual
             scenario_preview = await self.simulator.generate_scenario_message(self.state, principle)
             self.state.scenario_message = scenario_preview
@@ -567,7 +578,8 @@ def _default_prediction(principle):
         predicted_outcome=Outcome.PARTIAL,
         prediction_confidence=0.5,
         principles_used=[principle],
-        reasoning="default placeholder prediction",
+        reasoning="twin disabled: placeholder prediction",
+        source="default",
     )
 
 

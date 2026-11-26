@@ -151,18 +151,30 @@ def session_report_md(session_id: str, settings: Settings | None = None) -> str 
     # ---- twin vs outcome
     out.append("## Digital twin vs real outcome")
     out.append("")
+    twin = cfg.get("twin") or {}
     if pred:
+        source = twin.get("source", "model")
+        flag = "" if source in ("model", "manual") else f" — **{source}: not a real prediction**"
         out.append(
             f"**Twin predicted:** {pred['predicted_outcome']} "
-            f"(confidence {pred['confidence']:.2f})"
+            f"(agreement {pred['confidence']:.2f}){flag}"
         )
         if pred.get("reasoning"):
             out.append("")
             out.append(_quote(pred["reasoning"]))
+        for i, x in enumerate(twin.get("samples") or [], 1):
+            judged = "" if x.get("judged_by") == "model" else " (keyword rules)"
+            out.append("")
+            out.append(f"Simulation {i} → **{x.get('outcome')}**{judged}")
+            out.append("")
+            out.append(_quote(x.get("reply", "")))
     if outcome:
         out.append("")
+        judged = " — judged by keyword rules (judge model unavailable)" if cfg.get(
+            "judged_by") == "rules" else ""
         out.append(
-            f"**Real outcome:** {outcome['outcome']} (judge confidence {outcome['confidence']:.2f})"
+            f"**Real outcome:** {outcome['outcome']} "
+            f"(judge confidence {outcome['confidence']:.2f}){judged}"
         )
         if outcome.get("rationale"):
             out.append("")
@@ -303,6 +315,15 @@ def study_report_md(settings: Settings | None = None, include_synthetic: bool = 
     out.append("")
     matched = [s for s in basis if s.match_flag is not None]
     out.append(f"Overall match rate: **{_pct(sum(1 for s in matched if s.match_flag), len(matched))}**")
+    no_pred = sum(1 for s in basis if s.match_flag is None)
+    rules = sum(1 for s in basis if (s.config_snapshot or {}).get("judged_by") == "rules")
+    if no_pred or rules:
+        out.append("")
+        out.append(
+            f"> Data quality: {no_pred} completed session(s) had no real twin prediction "
+            f"(twin unavailable; excluded from the match rate) and {rules} real outcome(s) were "
+            "classified by keyword rules because the judge model was unavailable."
+        )
     out.append("")
     out.append("| Group | Match rate |")
     out.append("|---|---|")

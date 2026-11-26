@@ -11,6 +11,8 @@ configured in deploy.yaml; it keeps a model from grading its own output.
 
 from __future__ import annotations
 
+from collections import Counter
+
 from attack_agent.engine.llm import RoleClient
 from attack_agent.schemas import Outcome, StrategyPrinciple, TwinPrediction
 from attack_agent.state import AgentState
@@ -27,13 +29,18 @@ COMMUNICATION STYLE:
 NOTABLE BEHAVIOURAL EVIDENCE:
 {evidence}
 
+HOW THIS PERSON ACTUALLY WRITES (their own messages from the conversation):
+{quotes}
+
 You have just received the following message:
 ---
 {scenario}
 ---
 
-Reply to this message EXACTLY as this person realistically would, in their voice and at their
-typical length. Write only the reply, nothing else."""
+Reply to this message EXACTLY as this person realistically would: same voice, vocabulary, and
+typical length as their messages above. Consider how someone with this profile actually reacts to
+an unexpected request like this (comply, hesitate and ask, or refuse). Write only the reply,
+nothing else."""
 
 JUDGE_PROMPT = """You are classifying, for a controlled ethical research simulation, how a person
 responded to a harmless simulated IT-verification request.
@@ -66,6 +73,15 @@ def _style_line(state: AgentState) -> str:
     return communication_style_summary(state)
 
 
+def _quote_lines(state: AgentState, limit: int = 6) -> str:
+    msgs = [m["content"] for m in state.conversation_history if m["role"] == "user"]
+    # the most informative are usually the longer ones; keep chronological order
+    chosen = sorted(sorted(msgs, key=len, reverse=True)[:limit], key=msgs.index)
+    if not chosen:
+        return "  (no messages)"
+    return "\n".join(f'  - "{m[:300]}"' for m in chosen)
+
+
 def _evidence_lines(state: AgentState, limit: int = 6) -> str:
     top = sorted(state.evidence, key=lambda e: e.evidence_strength, reverse=True)[:limit]
     if not top:
@@ -78,9 +94,22 @@ def _evidence_lines(state: AgentState, limit: int = 6) -> str:
 
 
 class DigitalTwin:
-    def __init__(self, twin_llm: RoleClient, judge_llm: RoleClient):
+    """Predicts the participant's reaction by simulating it several times and voting.
+
+    Each sample: the twin model writes the reply this person would most likely send, then the
+    judge classifies it. The majority outcome is the prediction; confidence is the share of
+    samples that agree. Every step that could not run is marked (``source`` / ``judged_by``) so a
+    fallback is never mistaken for a real prediction.
+    """
+
+    def __init__(
+        self, twin_llm: RoleClient, judge_llm: RoleClient, samples: int = 3,
+        temperature: float = 0.8,
+    ):
         self.twin = twin_llm
         self.judge = judge_llm
+        self.samples = max(1, samples)
+        self.temperature = temperature
 
     async def predict(
         self, state: AgentState, scenario_message: str, principle: StrategyPrinciple
@@ -89,31 +118,65 @@ class DigitalTwin:
             traits=_trait_lines(state),
             style=_style_line(state),
             evidence=_evidence_lines(state),
+            quotes=_quote_lines(state),
             scenario=scenario_message,
         )
-        try:
-            twin_reply = await self.twin.chat_text([{"role": "user", "content": persona}])
-        except Exception:
-            twin_reply = ""
+        samples: list[dict] = []
+        # sequential on purpose: the twin node is one small GPU, parallel calls would just queue
+        for _ in range(self.samples):
+            try:
+                reply = await self.twin.chat_text(
+                    [{"role": "user", "content": persona}], temperature=self.temperature
+                )
+            except Exception:
+                reply = ""
+            if not reply.strip():
+                continue
+            outcome, confidence, reasoning, judged_by = await self._judge(scenario_message, reply)
+            samples.append({
+                "reply": reply.strip()[:600],
+                "outcome": outcome.value,
+                "confidence": round(confidence, 3),
+                "reasoning": reasoning,
+                "judged_by": judged_by,
+            })
 
-        outcome, confidence, reasoning = await self._judge(scenario_message, twin_reply)
+        if not samples:
+            return TwinPrediction(
+                predicted_outcome=Outcome.PARTIAL,
+                prediction_confidence=0.0,
+                principles_used=[principle],
+                reasoning="twin model produced no reply (unreachable?) — no real prediction",
+                source="fallback",
+            )
+        votes = Counter(x["outcome"] for x in samples)
+        top = max(votes.values())
+        # tie-break by the judges' summed confidence for each tied outcome
+        tied = [o for o, n in votes.items() if n == top]
+        winner = max(tied, key=lambda o: sum(x["confidence"] for x in samples if x["outcome"] == o))
+        all_judged = all(x["judged_by"] == "model" for x in samples)
+        vote_text = ", ".join(f"{o} ×{n}" for o, n in votes.most_common())
+        why = next(x["reasoning"] for x in samples if x["outcome"] == winner)
         return TwinPrediction(
-            predicted_outcome=outcome,
-            prediction_confidence=confidence,
+            predicted_outcome=Outcome(winner),
+            prediction_confidence=round(top / len(samples), 3),
             principles_used=[principle],
-            reasoning=(reasoning or "twin prediction")[:400],
+            reasoning=f"{len(samples)} simulations: {vote_text}. {why}"[:400],
+            source="model" if all_judged else "fallback",
+            samples=samples,
         )
 
-    async def _judge(self, scenario: str, reply: str) -> tuple[Outcome, float, str]:
-        if not reply.strip():
-            return Outcome.PARTIAL, 0.4, "twin produced no reply; defaulting to PARTIAL"
+    async def _judge(self, scenario: str, reply: str) -> tuple[Outcome, float, str, str]:
         prompt = JUDGE_PROMPT.format(scenario=scenario[:400], reply=reply[:600])
         try:
             data = await self.judge.chat_json([{"role": "user", "content": prompt}])
         except Exception:
             data = None
         if not isinstance(data, dict):
-            return Outcome.PARTIAL, 0.4, f"unparseable judge output for reply: {reply[:120]}"
+            from attack_agent.engine.evaluator import rule_based_evaluation
+
+            ev = rule_based_evaluation(reply)
+            return ev.outcome, ev.confidence, "judge unavailable; keyword rules", "rules"
         try:
             outcome = Outcome(str(data.get("outcome", "PARTIAL")).upper())
         except ValueError:
@@ -122,4 +185,4 @@ class DigitalTwin:
             confidence = min(1.0, max(0.0, float(data.get("confidence", 0.5))))
         except (TypeError, ValueError):
             confidence = 0.5
-        return outcome, confidence, str(data.get("reasoning", ""))[:400]
+        return outcome, confidence, str(data.get("reasoning", ""))[:300], "model"

@@ -264,6 +264,19 @@ class SessionManager:
                     **self._settings_snapshot(),
                     **(meta.get("config") or {}),
                     "device": engine.state.device,
+                    "twin": (
+                        {
+                            "source": engine.state.twin_prediction.source,
+                            "samples": engine.state.twin_prediction.samples,
+                        }
+                        if engine.state.twin_prediction
+                        else None
+                    ),
+                    "judged_by": (
+                        engine.state.outcome_evaluation.judged_by
+                        if engine.state.outcome_evaluation
+                        else None
+                    ),
                     "researcher_steered": bool(engine.state.interventions),
                     "interventions": engine.state.interventions,
                 },

@@ -16,8 +16,11 @@ export interface SessionState {
   evidence: { trait: string; signal: string; delta: number }[];
   trace: string[];
   scenario?: { message: string; principle: string; reason: string };
-  twin?: { predicted_outcome: string; confidence: number; reasoning: string };
-  outcome?: { real_outcome: string; twin_outcome: string; match_flag: boolean };
+  twin?: {
+    predicted_outcome: string; confidence: number; reasoning: string; source?: string;
+    samples?: { reply: string; outcome: string; confidence: number; reasoning: string; judged_by: string }[];
+  };
+  outcome?: { real_outcome: string; twin_outcome: string; match_flag: boolean | null; judged_by?: string | null; rationale?: string | null };
   questionnaireResult?: { answered: number; mae: number | null };
   debrief?: string;
   awaiting?: string;
@@ -92,11 +95,11 @@ export function useSession() {
           ns.chat = [...s.chat, { who: "scenario", text: e.message }];
           break;
         case "twin_prediction":
-          ns.twin = { predicted_outcome: e.predicted_outcome, confidence: e.confidence, reasoning: e.reasoning };
+          ns.twin = { predicted_outcome: e.predicted_outcome, confidence: e.confidence, reasoning: e.reasoning, source: e.source, samples: e.samples };
           ns.trace = [...s.trace, `twin predicts ${e.predicted_outcome} (${e.confidence})`];
           break;
         case "outcome":
-          ns.outcome = { real_outcome: e.real_outcome, twin_outcome: e.twin_outcome, match_flag: e.match_flag };
+          ns.outcome = { real_outcome: e.real_outcome, twin_outcome: e.twin_outcome, match_flag: e.match_flag, judged_by: e.judged_by, rationale: e.rationale };
           break;
         case "questionnaire_result":
           ns.questionnaireResult = { answered: e.answered, mae: e.comparison?.mae ?? null };

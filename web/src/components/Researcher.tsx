@@ -286,14 +286,37 @@ export function Researcher() {
           <Panel title="Twin prediction vs outcome">
             {state.twin ? (
               <div className="text-sm space-y-2">
-                <div>twin predicts: <b>{state.twin.predicted_outcome}</b> <span className="text-slate-500">({state.twin.confidence})</span></div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span>twin predicts: <b>{state.twin.predicted_outcome}</b></span>
+                  <span className="text-slate-500 text-xs">agreement {Math.round(state.twin.confidence * 100)}%</span>
+                  {state.twin.source && state.twin.source !== "model" && (
+                    <Badge color="red">⚠ {state.twin.source}: not a real prediction</Badge>
+                  )}
+                </div>
                 <div className="text-slate-400 text-xs">{state.twin.reasoning}</div>
+                {!!state.twin.samples?.length && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-slate-300">what the twin simulated ({state.twin.samples.length} runs)</summary>
+                    <div className="mt-1 space-y-2 max-h-56 overflow-y-auto">
+                      {state.twin.samples.map((x, i) => (
+                        <div key={i} className="border-l-2 border-line pl-2">
+                          <div className="text-slate-200 whitespace-pre-wrap">“{x.reply}”</div>
+                          <div className="text-slate-500">→ {x.outcome} ({x.confidence}){x.judged_by !== "model" && " · keyword rules"} — {x.reasoning}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
                 {state.outcome && (
-                  <div className="mt-2 pt-2 border-t border-line">
-                    real outcome: <b>{state.outcome.real_outcome}</b>{" "}
-                    <Badge color={state.outcome.match_flag ? "green" : "red"}>
-                      {state.outcome.match_flag ? "MATCH" : "MISS"}
-                    </Badge>
+                  <div className="mt-2 pt-2 border-t border-line space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span>real outcome: <b>{state.outcome.real_outcome}</b></span>
+                      {state.outcome.match_flag == null
+                        ? <Badge color="slate">no match score</Badge>
+                        : <Badge color={state.outcome.match_flag ? "green" : "red"}>{state.outcome.match_flag ? "MATCH" : "MISS"}</Badge>}
+                      {state.outcome.judged_by === "rules" && <Badge color="amber">⚠ judged by keyword rules</Badge>}
+                    </div>
+                    {state.outcome.rationale && <div className="text-slate-400 text-xs">{state.outcome.rationale}</div>}
                   </div>
                 )}
               </div>

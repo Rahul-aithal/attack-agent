@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # ---- session flow ----
     questionnaire_enabled: bool = True
     twin_enabled: bool = True
+    # independent twin simulations per prediction (majority vote; confidence = agreement)
+    twin_samples: int = 3
+    twin_temperature: float = 0.8
 
     # ---- storage / outputs ----
     output_dir: Path = Path("outputs")

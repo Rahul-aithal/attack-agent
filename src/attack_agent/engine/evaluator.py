@@ -94,6 +94,7 @@ def rule_based_evaluation(response: str) -> OutcomeEvaluation:
         confidence=confidence,
         rationale="rule-based keyword classification fallback",
         resistance_signals=resistance,
+        judged_by="rules",
     )
 
 

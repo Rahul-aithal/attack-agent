@@ -117,8 +117,20 @@ Python and `psutil` by itself:
 uv run scripts/node_monitor.py --server http://<server-ip>:8000 --token <admin token> --name windows
 ```
 
-Use a different `--name` per machine (e.g. `windows`, `gpubox`, `mac`). A machine without the repo
-only needs the single file `scripts/node_monitor.py` (download it from GitHub). Every 2 s it
+Use a different `--name` per machine (e.g. `windows`, `gpubox`, `mac`). Model-only laptops do
+**not** need the repo — just this one file:
+
+```bash
+# macOS / Linux
+curl -LO https://raw.githubusercontent.com/Rahul-aithal/attack-agent/main/scripts/node_monitor.py
+uv run node_monitor.py --server http://<server-ip>:8000 --token <admin token> --name gpubox
+```
+
+```powershell
+# Windows (PowerShell)
+iwr https://raw.githubusercontent.com/Rahul-aithal/attack-agent/main/scripts/node_monitor.py -OutFile node_monitor.py
+uv run node_monitor.py --server http://<server-ip>:8000 --token <admin token> --name windows
+``` Every 2 s it
 reports CPU, RAM, swap, battery, network, NVIDIA GPU utilisation / VRAM / temperature / power
 (via `nvidia-smi`) and the models Ollama has loaded (with how much sits in GPU memory).
 
@@ -166,7 +178,10 @@ written to disk or logs, and redacted from exports.
 1. **Consent** — explicit opt-in before anything runs.
 2. **Profiling** — casual chat; each turn updates a Beta posterior per trait. The participant never
    sees their live profile (it would bias them); researchers do.
-3. **Twin handoff** — the profile builds a persona; the twin predicts the outcome + confidence.
+3. **Twin handoff** — the profile and the participant's own messages build a persona; the twin
+   simulates the reply `ATTACK_AGENT_TWIN_SAMPLES` times (default 3), the judge classifies each,
+   and the majority is the prediction (confidence = agreement). If the twin or judge model is
+   unavailable this is marked as a fallback and the session gets no MATCH/MISS score.
 4. **Simulation** — a principle is chosen (`selection_mode`); the actor sends a harmless, safety-
    filtered message; up to `scenario_max_exchanges` turns.
 5. **Evaluation** — real outcome judged; `match_flag` = (twin prediction == real outcome).

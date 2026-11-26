@@ -321,3 +321,50 @@ def test_topic_planner_stays_then_moves_to_least_covered():
     conv.commit_focus(first)
     nxt = conv.plan_focus(state)
     assert nxt and nxt != first  # then moves on
+
+
+@pytest.mark.asyncio
+async def test_twin_votes_over_several_simulations_using_real_messages():
+    from attack_agent.engine.twin import DigitalTwin
+    from attack_agent.schemas import StrategyPrinciple
+
+    seen_prompts = []
+
+    class Twin:
+        async def chat_text(self, messages, temperature=None):
+            seen_prompts.append(messages[0]["content"])
+            return ["Sure, done!", "Who is this? Let me verify first.", "Sure, done!"][len(seen_prompts) - 1]
+
+    class Judge:
+        async def chat_json(self, messages, temperature=None, schema=None):
+            reply = messages[0]["content"]
+            if "Sure, done!" in reply:
+                return {"outcome": "SUCCESS", "confidence": 0.9, "reasoning": "complied"}
+            return {"outcome": "PARTIAL", "confidence": 0.7, "reasoning": "asked to verify"}
+
+    state = AgentState(session_id="t")
+    state.init_traits()
+    state.conversation_history = [{"role": "user", "content": "I always double-check emails before replying"}]
+    twin = DigitalTwin(Twin(), Judge(), samples=3)  # type: ignore[arg-type]
+    pred = await twin.predict(state, "Please confirm your asset ID", StrategyPrinciple.AUTHORITY)
+    assert pred.source == "model"
+    assert pred.predicted_outcome.value == "SUCCESS"
+    assert pred.prediction_confidence == pytest.approx(2 / 3, abs=0.01)
+    assert len(pred.samples) == 3
+    assert "double-check emails" in seen_prompts[0]  # the twin sees the participant's own words
+
+
+@pytest.mark.asyncio
+async def test_unreachable_twin_is_marked_fallback_and_never_matches(tmp_path):
+    settings = Settings(min_turns=1, max_turns=1, health_cache_seconds=0, output_dir=tmp_path,
+                        questionnaire_enabled=False)
+    good, bad = FakeProvider("good"), FakeProvider("bad", fail=True)
+    roles = {r: [Route("good", "m")] for r in ["agent", "extractor", "judge", "sim_participant"]}
+    roles["twin"] = [Route("bad", "m")]
+    engine = SessionEngine(Router({"good": good, "bad": bad}, roles, settings), settings=settings)
+    async for event in engine.events():
+        if event["type"] == "await_message":
+            engine.submit_message("ok sure")
+    assert engine.state.twin_prediction.source == "fallback"
+    assert engine.state.real_outcome is not None
+    assert engine.state.match_flag is None  # no real prediction, so no MATCH/MISS

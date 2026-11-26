@@ -24,6 +24,11 @@ class TwinPrediction(BaseModel):
     prediction_confidence: float = 0.5
     principles_used: list[StrategyPrinciple] = Field(default_factory=list)
     reasoning: str = ""
+    # How the prediction was made: "model" (twin simulations judged), "fallback" (twin or judge
+    # unavailable, so a default was used), "manual" (twin_prediction.txt), "default".
+    source: str = "model"
+    # One entry per simulated reply: {"reply", "outcome", "confidence", "reasoning", "judged_by"}
+    samples: list[dict] = Field(default_factory=list)
 
 
 class ResistanceSignal(BaseModel):
@@ -38,3 +43,4 @@ class OutcomeEvaluation(BaseModel):
     confidence: float = 0.5
     rationale: str = ""
     resistance_signals: list[ResistanceSignal] = Field(default_factory=list)
+    judged_by: str = "model"  # "model" or "rules" (keyword fallback when the judge failed)
