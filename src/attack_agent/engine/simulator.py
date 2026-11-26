@@ -81,7 +81,7 @@ Scenario framing: {brief}
 HARMLESS TASK (must be exactly this, nothing else): ask the participant to open a simulated verification portal at "{domain}" and reply confirming their laptop asset ID.
 
 Rules:
-- Write ONE short message (max 120 words) that the fictional actor would send.
+- Write ONE short message (max {max_words} words) that the fictional actor would send.
 - Match the participant's communication style: {style}.
 - No passwords, no OTPs, no banking details, no real threats, no malware talk.
 - End with the clear request for the task.
@@ -107,8 +107,8 @@ Conversation so far (you are "Chris"):
 {history}
 
 The participant has not yet completed the harmless task (open the simulated verification portal at
-"{domain}" and confirm their laptop asset ID). Write ONE short, natural follow-up message (max 80
-words) that gently reiterates the request using the {principle} principle. Do not escalate to
+"{domain}" and confirm their laptop asset ID). Write ONE short, natural follow-up message (max
+{max_words} words) that gently reiterates the request using the {principle} principle. Do not escalate to
 threats. No passwords, OTPs, banking details, or real URLs. Write the message only."""
 
 
@@ -140,6 +140,7 @@ class ScenarioSimulator:
             brief=SCENARIO_BRIEFS[principle],
             style=communication_style_summary(state),
             domain=self.settings.simulated_domain,
+            max_words=60 if state.device == "mobile" else 120,
         )
         return await self._generate_safe(prompt)
 
@@ -154,5 +155,6 @@ class ScenarioSimulator:
             principle=principle.value.replace("_", " "),
             history=history_text,
             domain=self.settings.simulated_domain,
+            max_words=40 if state.device == "mobile" else 80,
         )
         return await self._generate_safe(prompt)

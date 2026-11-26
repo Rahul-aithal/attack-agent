@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AdminSocket, createSession, createExperiment, listExperiments, participantLink, postByok, putRouting } from "../api";
+import { AdminSocket, createSession, createExperiment, listExperiments, participantLink, postByok, putRouting, reportUrl } from "../api";
 import type { ConnState, LiveSession } from "../api";
 import type { SessionState } from "../useSession";
 import { useSession } from "../useSession";
@@ -94,7 +94,7 @@ function useAdminFeed(token: string) {
   return { sessions, nodes, machines, llm, conn, denied };
 }
 
-function LiveSessions({ rows, denied, onAttach }: { rows: LiveSession[]; denied: boolean; onAttach: (id: string, code?: string | null) => void }) {
+function LiveSessions({ rows, denied, onAttach, token }: { rows: LiveSession[]; denied: boolean; onAttach: (id: string, code?: string | null) => void; token: string }) {
   if (denied) return <div className="text-xs text-rose-400">token not accepted (copy it again from the server terminal; it changes on every restart)</div>;
   if (rows.length === 0) return <div className="text-xs text-slate-500">no sessions yet</div>;
   return (
@@ -111,10 +111,23 @@ function LiveSessions({ rows, denied, onAttach }: { rows: LiveSession[]; denied:
               {r.participant_connected ? "● participant online" : "○ waiting for participant"}
             </span>
           )}
-          <span className="ml-auto"><Button variant="ghost" onClick={() => onAttach(r.session_id, r.join_code)}>Watch</Button></span>
+          {r.finished && <ReportLinks token={token} sessionId={r.session_id} label="report" />}
+          <span className="ml-auto"><Button variant="ghost" onClick={() => onAttach(r.session_id, r.join_code)}>{r.finished ? "Open" : "Watch"}</Button></span>
         </div>
       ))}
     </div>
+  );
+}
+
+function ReportLinks({ token, sessionId, label }: { token: string; sessionId: string | null; label: string }) {
+  const cls = "text-xs underline text-slate-300 hover:text-white";
+  return (
+    <span className="text-xs text-slate-400 whitespace-nowrap">
+      {label}:{" "}
+      <a className={cls} href={reportUrl(token, sessionId, "md")} target="_blank" rel="noreferrer">Markdown</a>
+      {" · "}
+      <a className={cls} href={reportUrl(token, sessionId, "pdf")} title="converts to PDF on the server">PDF</a>
+    </span>
   );
 }
 
@@ -204,6 +217,7 @@ export function Researcher() {
         <Panel title="Researcher / presenter access">
           <label className="text-xs text-slate-400">Admin token</label>
           <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="printed in server logs at startup" className="mt-1 mb-3" />
+          {token && !feed.denied && <div className="mb-3"><ReportLinks token={token} sessionId={null} label="Study report (saved sessions)" /></div>}
           <div className="mb-3">
             <Button onClick={newForParticipant} disabled={!token || feed.denied}>New session for a participant</Button>
             <span className="text-xs text-slate-500 ml-2">gives you a join code to hand over</span>
@@ -211,7 +225,7 @@ export function Researcher() {
           <label className="text-xs text-slate-400">
             Live sessions {feed.conn === "open" ? <span className="text-emerald-400">● live</span> : token ? <span className="text-amber-400">○ connecting…</span> : null}
           </label>
-          <div className="mt-1 mb-3">{token && <LiveSessions rows={feed.sessions} denied={feed.denied} onAttach={attach} />}</div>
+          <div className="mt-1 mb-3">{token && <LiveSessions rows={feed.sessions} denied={feed.denied} onAttach={attach} token={token} />}</div>
           <label className="text-xs text-slate-400">Or attach by session id</label>
           <div className="flex gap-2 mt-1">
             <Input value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="sess_…" />
@@ -238,6 +252,7 @@ export function Researcher() {
             </Badge>
           )}
           <Button variant="ghost" onClick={detach}>← all sessions</Button>
+          {watched?.finished && <ReportLinks token={token} sessionId={sessionId} label="Report" />}
           <Badge color="slate">phase: {state.phase || "—"}</Badge>
           <Badge color="amber">stability {state.stability.toFixed(2)}</Badge>
           <Badge color="amber">avg conf {state.avgConfidence.toFixed(2)}</Badge>

@@ -42,6 +42,9 @@ class AgentState(BaseModel):
     # Researcher steering (focus a trait, one-off instruction, end profiling early). Logged so
     # steered sessions can be flagged or excluded in the analysis.
     interventions: list[dict] = Field(default_factory=list)
+    # "mobile" | "desktop", reported by the participant's browser; message length adapts to it
+    # and it is stored with the session (device can affect how people respond).
+    device: str | None = None
 
     def init_traits(self) -> None:
         if not self.trait_estimates:

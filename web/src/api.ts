@@ -21,6 +21,12 @@ export async function joinByCode(code: string): Promise<{ session_id: string; jo
   return await res.json();
 }
 
+/** Report links. Markdown opens in the browser; PDF is rendered only when that link is used. */
+export function reportUrl(token: string, sessionId: string | null, format: "md" | "pdf"): string {
+  const path = sessionId ? `/sessions/${sessionId}/report` : "/report";
+  return `${path}?admin_token=${encodeURIComponent(token)}${format === "pdf" ? "&format=pdf" : ""}`;
+}
+
 export function participantLink(code: string): string {
   return `${location.origin}/?view=participant&code=${code}`;
 }

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from loguru import logger
 from pydantic import BaseModel
 
@@ -170,6 +170,38 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="session not persisted yet")
         return data
 
+    # Reports are Markdown; a PDF is only rendered when explicitly asked for (?format=pdf).
+    def _report_response(markdown: str, name: str, fmt: str):
+        if fmt == "pdf":
+            from attack_agent.reports import md_to_pdf
+
+            return Response(
+                md_to_pdf(markdown, title=name),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{name}.pdf"'},
+            )
+        return PlainTextResponse(
+            markdown,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'inline; filename="{name}.md"'},
+        )
+
+    @app.get("/sessions/{session_id}/report", dependencies=[Depends(require_admin)])
+    async def session_report(session_id: str, format: str = Query(default="md")):
+        from attack_agent.reports import session_report_md
+
+        md = await asyncio.to_thread(session_report_md, session_id)
+        if md is None:
+            raise HTTPException(status_code=404, detail="session not saved yet (still running?)")
+        return _report_response(md, f"report_{session_id}", format)
+
+    @app.get("/report", dependencies=[Depends(require_admin)])
+    async def study_report(format: str = Query(default="md"), synthetic: bool = False):
+        from attack_agent.reports import study_report_md
+
+        md = await asyncio.to_thread(study_report_md, None, synthetic)
+        return _report_response(md, "study_report", format)
+
     @app.delete("/sessions/{session_id}", dependencies=[Depends(require_admin)])
     async def delete(session_id: str):
         app.state.manager.sessions.pop(session_id, None)
@@ -258,6 +290,8 @@ def create_app() -> FastAPI:
                     engine.steer(data.get("focus"), data.get("note"))
                 elif kind == "finish_profiling" and include_profile:
                     engine.finish_profiling()
+                elif kind == "client_info" and is_participant:
+                    engine.set_device(str(data.get("device", "")))
                 elif kind == "questionnaire_progress" and is_participant:
                     mgr.set_questionnaire_progress(session_id, data.get("answered", 0))
 

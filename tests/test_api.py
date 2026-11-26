@@ -209,3 +209,47 @@ def test_session_list_counts_answers(client):
         assert rows[sid]["participant_messages"] == 1
         assert rows[sid]["agent_messages"] == 2  # opening + reply
         assert rows[sid]["questionnaire_total"] == 50
+
+
+def _run_full_session(c):
+    sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:
+        ws.send_json({"kind": "client_info", "device": "mobile"})
+        try:
+            while True:
+                event = ws.receive_json()
+                if event["type"] == "await_message":
+                    ws.send_json({"kind": "message", "text": "I plan ahead and love helping people"})
+                elif event["type"] == "await_questionnaire":
+                    ws.send_json({"kind": "questionnaire",
+                                  "responses": {str(i): 4 for i in range(1, 51)}})
+                elif event["type"] == "complete":
+                    break
+        except WebSocketDisconnect:
+            pass
+    c.app.state.manager.sessions  # noqa: B018
+    return sid
+
+
+def test_reports_markdown_by_default_pdf_on_request(client):
+    c, _ = client
+    sid = _run_full_session(c)
+    import time
+
+    for _ in range(50):  # saved by the background watcher
+        if c.get(f"/sessions/{sid}/report", headers={"X-Admin-Token": "tok"}).status_code == 200:
+            break
+        time.sleep(0.05)
+    md = c.get(f"/sessions/{sid}/report", headers={"X-Admin-Token": "tok"})
+    assert md.status_code == 200
+    assert md.headers["content-type"].startswith("text/markdown")
+    assert "# Session report" in md.text and "## Transcript" in md.text
+    assert "| Device | mobile |" in md.text
+
+    study = c.get("/report", headers={"X-Admin-Token": "tok"})
+    assert study.status_code == 200 and "# Study report" in study.text
+
+    pdf = c.get(f"/sessions/{sid}/report?format=pdf", headers={"X-Admin-Token": "tok"})
+    assert pdf.status_code == 200
+    assert pdf.content[:4] == b"%PDF"
+    assert c.get(f"/sessions/{sid}/report").status_code == 401

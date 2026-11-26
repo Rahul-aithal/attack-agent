@@ -247,6 +247,7 @@ class SessionManager:
                 {
                     **self._settings_snapshot(),
                     **(meta.get("config") or {}),
+                    "device": engine.state.device,
                     "researcher_steered": bool(engine.state.interventions),
                     "interventions": engine.state.interventions,
                 },
@@ -316,6 +317,7 @@ class SessionManager:
                     "questionnaire_submitted": submitted is not None,
                     "questionnaire_total": 50,
                     "interventions": len(state.interventions),
+                    "device": state.device,
                     "finished": engine.finished,
                     "participant_id": self._meta.get(sid, {}).get("participant_id"),
                 }

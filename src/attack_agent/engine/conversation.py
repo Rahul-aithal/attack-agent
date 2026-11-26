@@ -15,7 +15,7 @@ Have a natural, warm, casual conversation with the participant.
 Rules:
 - NEVER mention personality, traits, profiling, analysis, tests, or the study mechanics.
 - Ask at most ONE question per reply.
-- Keep replies SHORT: 1-3 sentences.
+- {length_rule}
 - Adapt your tone and vocabulary to the participant's style.
 - Do not repeat questions you already asked.
 - This turn, naturally steer the topic toward: {focus}
@@ -25,6 +25,15 @@ Write your next message only. No quotes, no labels."""
 OPENING_PROMPT = """You are "Alex", a friendly conversational partner in a casual chat.
 Write a short, warm opening message (1-2 sentences) greeting the participant and starting
 a light conversation (e.g., how their day is going). No quotes, no labels."""
+
+
+def length_rule(device: str | None) -> str:
+    if device == "mobile":
+        return (
+            "The participant is on a PHONE: keep replies VERY SHORT, 1-2 short sentences "
+            "(under 30 words), like a text message."
+        )
+    return "Keep replies SHORT: 1-3 sentences."
 
 
 class ConversationEngine:
@@ -56,7 +65,9 @@ class ConversationEngine:
             "whatever keeps the conversation flowing naturally"
         )
         extra = f"- Additional guidance for this reply: {note}\n" if note else ""
-        system = REPLY_SYSTEM_PROMPT.format(focus=hints, note=extra)
+        system = REPLY_SYSTEM_PROMPT.format(
+            focus=hints, note=extra, length_rule=length_rule(state.device)
+        )
         return [{"role": "system", "content": system}] + state.conversation_history[-10:]
 
     async def generate_reply(

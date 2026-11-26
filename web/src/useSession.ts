@@ -33,6 +33,11 @@ const initial: SessionState = {
   convergence: [], evidence: [], trace: [], awaitQuestionnaire: false, interventions: [],
 };
 
+export function detectDevice(): "mobile" | "desktop" {
+  const coarse = window.matchMedia?.("(pointer: coarse)").matches;
+  return coarse && Math.min(window.innerWidth, window.innerHeight) < 820 ? "mobile" : "desktop";
+}
+
 export function useSession() {
   const [state, setState] = useState<SessionState>(initial);
   const [conn, setConn] = useState<ConnState>("closed");
@@ -122,7 +127,11 @@ export function useSession() {
     // Every (re)connect replays the full session, so start from a clean view each time.
     sockRef.current = new SessionSocket(sessionId, token, {
       onEvent: handle,
-      onOpen: () => setState(initial),
+      onOpen: () => {
+        setState(initial);
+        // participant only: lets the agent keep messages short on phones
+        if (!token) sockRef.current?.send({ kind: "client_info", device: detectDevice() });
+      },
       onState: setConn,
     });
   }, [handle]);

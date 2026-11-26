@@ -118,6 +118,10 @@ class SessionEngine:
         self._steer = {"focus": focus, "note": note}
         self._log_intervention("steer", focus=focus, note=note)
 
+    def set_device(self, device: str) -> None:
+        if device in ("mobile", "desktop") and self.state.device != device:
+            self.state.device = device
+
     def finish_profiling(self) -> None:
         """End the profiling chat now and move on to the twin + scenario."""
         if self.state.phase != Phase.PROFILING or self._finish_requested:

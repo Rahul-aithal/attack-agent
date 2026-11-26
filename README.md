@@ -87,9 +87,63 @@ cp deploy.example.yaml deploy.yaml           # set the node IPs
 bash scripts/serve.sh                        # prints the admin token
 ```
 
-Participants open `http://<server-ip>:8000/?view=participant`; researchers open
-`?view=researcher` and enter the admin token. Session data is stored in `outputs/attack_agent.db`
-on the server machine — copy it off after each session day.
+Session data is stored in `outputs/attack_agent.db` on the server machine — copy it off after each
+session day. Set a fixed `ATTACK_AGENT_ADMIN_TOKEN` in `.env` so the token survives restarts.
+
+### Running a session
+
+1. Researcher opens `http://<server-ip>:8000/?view=researcher`, enters the admin token and clicks
+   **New session for a participant**. This shows a 6-character **join code** and a link.
+2. Participant opens `http://<server-ip>:8000/?view=participant`, types the code (or opens the
+   link), consents and chats. The dashboard shows them as online.
+3. If the participant's connection drops (hotspot blip, sleep, refresh) the page reconnects by
+   itself and restores the chat. The server waits `ATTACK_AGENT_PARTICIPANT_GRACE_SECONDS`
+   (default 120) before aborting a participant who doesn't come back.
+
+Agent messages adapt to the participant's device (shorter on phones); the device is stored with
+the session. The simulated request arrives as an ordinary message from a new contact
+("Chris · IT Support") so it doesn't stand out as the test; the debrief explains it afterwards.
+
+### Monitoring every laptop
+
+Run the monitor on **each** laptop (model nodes and the server). It needs only `uv`, which fetches
+Python and `psutil` by itself:
+
+```bash
+# install uv if missing
+#   macOS / Linux:  curl -LsSf https://astral.sh/uv/install.sh | sh
+#   Windows (PowerShell):  powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+uv run scripts/node_monitor.py --server http://<server-ip>:8000 --token <admin token> --name windows
+```
+
+Use a different `--name` per machine (e.g. `windows`, `gpubox`, `mac`). A machine without the repo
+only needs the single file `scripts/node_monitor.py` (download it from GitHub). Every 2 s it
+reports CPU, RAM, swap, battery, network, NVIDIA GPU utilisation / VRAM / temperature / power
+(via `nvidia-smi`) and the models Ollama has loaded (with how much sits in GPU memory).
+
+The researcher dashboard then shows, live over a WebSocket:
+
+- **Machines** — the above per laptop, flagged red if a laptop stops reporting.
+- **Model activity** — every model call as it runs (role, node, model, elapsed time), recent calls,
+  and per role/node/model totals (calls, average latency, failures).
+- **Sessions** — join code, phase, participant online/offline, chat replies, questionnaire
+  progress (n/50, live).
+- **Session view** — live transcript, trait radar, convergence, twin vs outcome, and an optional
+  **steering** panel: topic coverage per trait, "ask next" on a trait, a one-off instruction for
+  the next reply, or end the chat early. Every intervention is logged with the session
+  (`researcher_steered`, `interventions`) and the study report leaves steered sessions out of the
+  headline figures.
+
+### Reports
+
+Reports are generated as **Markdown** from the database (so they survive restarts). A PDF is only
+rendered when you ask for one.
+
+- Per session: dashboard → **Report: Markdown · PDF** (on finished sessions), or
+  `GET /sessions/{id}/report` (`?format=pdf` for PDF).
+- Whole study: dashboard → **Study report**, or `GET /report` (`&synthetic=true` to include
+  simulated participants).
 
 On a phone hotspot use each laptop's local IP (turn off "AP/client isolation" on Android); on
 shared Wi-Fi use Tailscale `100.x` addresses so the unauthenticated Ollama port isn't exposed.
@@ -126,7 +180,9 @@ written to disk or logs, and redacted from exports.
 `POST /sessions` · `GET /sessions/{id}` · `WS /sessions/{id}/stream` (events out, messages in) ·
 `POST /sessions/{id}/questionnaire` · `POST /sessions/{id}/abort` · `GET /sessions/{id}/export` ·
 `GET /nodes` · `PUT /routing` · `POST /byok` · `GET|POST /experiments` · `GET /export.csv` ·
-`DELETE /sessions/{id}` · `DELETE /participants/{id}` (delete-my-data).
+`DELETE /sessions/{id}` · `DELETE /participants/{id}` (delete-my-data) · `GET /join/{code}` ·
+`GET /sessions` · `WS /admin/stream` (dashboard feed) · `POST|GET /telemetry` ·
+`GET /sessions/{id}/report` · `GET /report`.
 
 Researcher endpoints require the admin token (`X-Admin-Token` header or `?admin_token=`). Interactive
 docs at `/docs`. Participant streams never carry live trait data.
@@ -153,8 +209,8 @@ uv run python -m analysis.ablations --key profiler_version
 
 ```bash
 uv sync
-uv run pytest           # 43 tests, fully offline (fake model provider)
-uv run ruff check src tests analysis
+uv run pytest           # fully offline (fake model provider)
+uv run ruff check src tests analysis scripts
 cd web && bun install && bun run build
 ```
 

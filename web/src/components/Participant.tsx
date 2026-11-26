@@ -122,6 +122,8 @@ export function Participant() {
         )}
       </div>
 
+      <NewMessageToast show={state.chat.some((m) => m.who === "scenario")} />
+
       {conn === "reconnecting" && !done && !aborted && (
         <div className="rounded-lg border border-amber-600 bg-amber-950/40 px-3 py-2 text-sm text-amber-200">
           Connection lost — reconnecting… your chat is kept, just wait a moment.
@@ -146,9 +148,9 @@ export function Participant() {
         <Panel className="!p-2 sm:!p-4 flex flex-col h-[calc(100dvh-8.5rem)] sm:h-[70vh] min-h-[20rem]">
           <div className="flex-1 overflow-y-auto space-y-3 px-1 overscroll-contain">
             {state.chat.map((m, i) => (
-              <Bubble key={i} who={m.who} text={m.text} />
+              <Bubble key={i} who={m.who} text={m.text} showHeader={m.who !== "participant" && state.chat[i - 1]?.who !== m.who} />
             ))}
-            {state.streaming && <Bubble who="agent" text={state.streaming} />}
+            {state.streaming && <Bubble who="agent" text={state.streaming} showHeader={state.chat[state.chat.length - 1]?.who !== "agent"} />}
             {thinking && !state.streaming && <Typing />}
             <div ref={endRef} />
           </div>
@@ -228,19 +230,52 @@ function Typing() {
   );
 }
 
-function Bubble({ who, text }: { who: string; text: string }) {
-  if (who === "scenario")
-    return (
-      <div className="border border-rose-700 bg-rose-950/40 rounded-lg p-3">
-        <div className="text-xs text-rose-300 mb-1">Incoming message</div>
-        <div className="text-sm whitespace-pre-wrap">{text}</div>
-      </div>
-    );
+// The simulated request must look like an ordinary message from another person. Anything that
+// marks it as special (colour, "incoming", "test") would tell the participant it's the experiment.
+const ACTOR = { name: "Chris", role: "IT Support", initial: "C" };
+
+function Avatar({ letter, tone }: { letter: string; tone: string }) {
+  return <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 ${tone}`}>{letter}</div>;
+}
+
+function Bubble({ who, text, showHeader }: { who: string; text: string; showHeader?: boolean }) {
   const me = who === "participant";
+  const actor = who === "scenario";
+  const body = (
+    <div className={`max-w-[85%] sm:max-w-[80%] rounded-2xl px-3 py-2 text-[15px] sm:text-sm leading-snug whitespace-pre-wrap break-words ${me ? "bg-accent text-white" : "bg-panel2 text-slate-100"}`}>
+      {text}
+    </div>
+  );
+  if (me) return <div className="flex justify-end">{body}</div>;
   return (
-    <div className={`flex ${me ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[85%] sm:max-w-[80%] rounded-2xl px-3 py-2 text-[15px] sm:text-sm leading-snug whitespace-pre-wrap break-words ${me ? "bg-accent text-white" : "bg-panel2 text-slate-100"}`}>
-        {text}
+    <div>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-1 mt-1">
+          <Avatar letter={actor ? ACTOR.initial : "A"} tone={actor ? "bg-teal-700 text-teal-100" : "bg-indigo-700 text-indigo-100"} />
+          <span className="text-xs text-slate-300">{actor ? ACTOR.name : "Alex"}</span>
+          {actor && <span className="text-[11px] text-slate-500">· {ACTOR.role}</span>}
+        </div>
+      )}
+      <div className="flex justify-start pl-9">{body}</div>
+    </div>
+  );
+}
+
+/** Small "new message" notice, like a chat app shows when a different contact writes. */
+function NewMessageToast({ show }: { show: boolean }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!show) return;
+    setVisible(true);
+    const t = setTimeout(() => setVisible(false), 4000);
+    return () => clearTimeout(t);
+  }, [show]);
+  if (!visible) return null;
+  return (
+    <div className="fixed top-14 inset-x-0 z-20 flex justify-center px-3 pointer-events-none">
+      <div className="flex items-center gap-2 rounded-xl bg-panel border border-line shadow-lg px-3 py-2 text-sm">
+        <Avatar letter={ACTOR.initial} tone="bg-teal-700 text-teal-100" />
+        <div><div className="text-slate-200">{ACTOR.name} · {ACTOR.role}</div><div className="text-xs text-slate-400">sent you a message</div></div>
       </div>
     </div>
   );
