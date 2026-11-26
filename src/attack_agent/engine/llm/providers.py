@@ -27,6 +27,10 @@ class OllamaProvider(Provider):
             "model": model,
             "messages": messages,
             "stream": stream,
+            # Disable step-by-step "thinking" on reasoning models (qwen3, deepseek-r1, ...): it
+            # adds seconds per reply on laptop GPUs and isn't needed for chat or JSON. Ignored by
+            # models without a thinking mode.
+            "think": False,
             "options": {"temperature": temperature},
         }
 

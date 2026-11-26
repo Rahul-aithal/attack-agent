@@ -1,55 +1,58 @@
-# Model routing across machines. Copy to `deploy.yaml` and edit. If `deploy.yaml` is absent, every
-# role uses the single local Ollama at ATTACK_AGENT_OLLAMA_HOST with ATTACK_AGENT_MODEL_NAME.
+# Model routing across machines. Copy to `deploy.yaml` (on the machine that runs the server) and
+# edit the node URLs. If `deploy.yaml` is absent, every role uses the single local Ollama at
+# ATTACK_AGENT_OLLAMA_HOST with ATTACK_AGENT_MODEL_NAME.
 #
 # Each node is one model endpoint. Each role lists `node/model` routes in priority order; the
 # global `fallback` list is appended to every role. If a node fails a health check or a call, the
-# next route is tried. Use a DIFFERENT model family per role (agent / twin / judge) so a model
-# never grades its own output.
+# next route is tried. Each role uses a DIFFERENT model family (agent = Qwen, twin = Gemma,
+# judge = Phi) so a model never grades output from its own family.
 #
-# Make each Ollama reachable on the network:  OLLAMA_HOST=0.0.0.0 ollama serve
-# Tailscale gives each machine a stable address across networks (use the 100.x.y.z IPs below).
+# Reference layout (3 laptops):
+#   windows  — 16 GB RAM + RTX 3050 4 GB   → agent + extractor     (qwen3:8b)
+#   gpubox   —  8 GB RAM + RTX 2050 4 GB   → twin + sim + backup   (gemma3:4b, llama3.2:3b)
+#   mac      — MacBook M3 8 GB             → server + web UI + SQLite + judge (phi4-mini)
+#
+# Make each Ollama reachable on the network (OLLAMA_HOST=0.0.0.0). On a phone hotspot use each
+# laptop's local IP; on shared Wi-Fi use Tailscale 100.x addresses instead.
 
 nodes:
-  laptop16:                     # 16 GB laptop — heavier 7-8B models
+  windows:                      # Windows, RTX 3050 — the agent's 8B model
     kind: ollama
-    url: http://100.100.0.11:11434
-  macbook8:                     # 8 GB MacBook — small 3-4B models
+    url: http://192.168.43.20:11434
+  gpubox:                       # Linux, RTX 2050 — twin, synthetic participants, backup
     kind: ollama
-    url: http://100.100.0.12:11434
-  host:                         # host machine (runs API + UI + SQLite)
+    url: http://192.168.43.10:11434
+  mac:                          # MacBook M3 — runs this server, so its Ollama is local
     kind: ollama
     url: http://localhost:11434
 
   # Optional cloud fallback (BYOK). The key is read from the named environment variable; it is
-  # never written to disk or logs. Omit these nodes entirely if you don't use cloud.
-  openai:
-    kind: openai
-    api_key_env: OPENAI_API_KEY
-  anthropic:
-    kind: anthropic
-    api_key_env: ANTHROPIC_API_KEY
-  gemini:
-    kind: gemini
-    api_key_env: GEMINI_API_KEY
+  # never written to disk or logs. Uncomment only if you have a key.
+  # openai:
+  #   kind: openai
+  #   api_key_env: OPENAI_API_KEY
+  # anthropic:
+  #   kind: anthropic
+  #   api_key_env: ANTHROPIC_API_KEY
+  # gemini:
+  #   kind: gemini
+  #   api_key_env: GEMINI_API_KEY
 
 roles:
-  agent:            # conversation + scenario actor (larger model helps)
-    - laptop16/llama3.1:8b
-    - host/llama3.2:3b
-  extractor:        # signal extraction (benefits from a capable but cheap model)
-    - laptop16/llama3.1:8b
-    - host/llama3.2:3b
-  twin:             # digital twin persona (different family from the agent)
-    - macbook8/qwen2.5:3b
-    - host/gemma2:2b
-  judge:            # outcome/questionnaire classification (yet another family)
-    - host/gemma2:2b
-    - macbook8/qwen2.5:3b
-  sim_participant:  # synthetic participants for evaluation (different family from the agent)
-    - macbook8/qwen2.5:3b
+  agent:            # conversation + scenario actor (largest model)
+    - windows/qwen3:8b
+  extractor:        # personality-signal extraction
+    - windows/qwen3:8b
+  twin:             # digital twin persona
+    - gpubox/gemma3:4b
+  judge:            # outcome / questionnaire classification
+    - mac/phi4-mini
+    - gpubox/gemma3:4b
+  sim_participant:  # synthetic participants for evaluation
+    - gpubox/gemma3:4b
 
-# Appended to every role as a last resort. Point at a reliable local model or a cloud node.
+# Appended to every role as a last resort (e.g. if the Windows laptop drops off the hotspot).
 fallback:
-  - host/llama3.2:3b
+  - gpubox/llama3.2:3b
+  - mac/phi4-mini
   # - anthropic/claude-haiku-5-5
-  # - openai/gpt-4o-mini

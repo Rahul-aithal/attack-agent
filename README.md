@@ -57,31 +57,47 @@ With no `deploy.yaml`, every role uses the single local Ollama (`ATTACK_AGENT_OL
 
 ## Running across three laptops
 
-Models run wherever the RAM is; the backend + UI + SQLite run on the host and are light.
+The server, web UI and SQLite are light, so they run on the machine **without** a discrete GPU;
+the GPU laptops run the models. Each role uses a different model family.
 
-| Machine | Role | Model size |
+| Machine | Runs | Models |
 |---|---|---|
-| 16 GB laptop | agent + extractor | 7–8B, 4-bit |
-| 8 GB MacBook | twin + sim_participant | 3–4B, 4-bit |
-| Host (8 GB + RTX 2050) | backend, web UI, SQLite, judge | ≤4B, 4-bit |
+| Windows, 16 GB + RTX 3050 4 GB | agent + extractor | `qwen3:8b` (Qwen) |
+| Linux, 8 GB + RTX 2050 4 GB | twin + sim_participant + backup | `gemma3:4b` (Gemma), `llama3.2:3b` |
+| MacBook M3, 8 GB | **server + web UI + SQLite** + judge | `phi4-mini` (Phi) |
 
-On **each model machine**:
+On each **model machine**, install Ollama, pull its models, and make it reachable on the network
+(`OLLAMA_HOST=0.0.0.0`):
+
+- **Linux:** `sudo systemctl edit ollama` → add `[Service]` / `Environment="OLLAMA_HOST=0.0.0.0"`,
+  then `sudo systemctl restart ollama` (or run `bash scripts/node_ollama.sh <models>`).
+- **Windows:** `setx OLLAMA_HOST 0.0.0.0`, quit Ollama from the tray and restart it; allow the port
+  (admin PowerShell): `New-NetFirewallRule -DisplayName Ollama -Direction Inbound -Protocol TCP
+  -LocalPort 11434 -Action Allow`; set the Wi-Fi network profile to **Private**.
+
+Check from the server machine: `curl http://<node-ip>:11434/api/tags`.
+
+On the **server machine** (MacBook):
 
 ```bash
-bash scripts/node_ollama.sh llama3.1:8b      # binds Ollama to 0.0.0.0 and pulls the node's models
+uv sync && (cd web && bun install && bun run build)
+ollama pull phi4-mini
+cp .env.example .env
+cp deploy.example.yaml deploy.yaml           # set the node IPs
+bash scripts/serve.sh                        # prints the admin token
 ```
 
-On the **host**:
+Participants open `http://<server-ip>:8000/?view=participant`; researchers open
+`?view=researcher` and enter the admin token. Session data is stored in `outputs/attack_agent.db`
+on the server machine — copy it off after each session day.
 
-```bash
-cp deploy.example.yaml deploy.yaml           # edit node URLs (Tailscale 100.x addresses are easiest)
-bash scripts/serve.sh
-```
+On a phone hotspot use each laptop's local IP (turn off "AP/client isolation" on Android); on
+shared Wi-Fi use Tailscale `100.x` addresses so the unauthenticated Ollama port isn't exposed.
 
 Routing lives in `deploy.yaml`: each role lists `node/model` routes in priority order, with a global
 `fallback` chain. If a node fails a health check or a call, the next route is used, then the
-fallback, then (optionally) a cloud key. Using a **different model family per role** keeps a model
-from grading its own output.
+fallback, then (optionally) a cloud key. Reasoning models (e.g. qwen3) are called with
+`think: false` to keep replies fast.
 
 ### BYOK (optional cloud fallback)
 
