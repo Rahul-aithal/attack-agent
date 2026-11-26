@@ -131,6 +131,30 @@ function ReportLinks({ token, sessionId, label }: { token: string; sessionId: st
   );
 }
 
+function NodeStatus({ nodes }: { nodes: any[] }) {
+  return (
+    <Panel title="Node status">
+      <div className="space-y-2 text-sm">
+        {nodes.map((n) => (
+          <div key={n.node} className="space-y-0.5">
+            <div className="flex items-center justify-between">
+              <span>{n.node} <span className="text-slate-500 text-xs">({n.kind})</span></span>
+              <Badge color={!n.healthy ? "red" : n.models_missing?.length ? "amber" : "green"}>
+                {!n.healthy ? "down" : n.models_missing?.length ? "model missing" : "up"}
+              </Badge>
+            </div>
+            {!!n.roles?.length && <div className="text-[11px] text-slate-500">main for: {n.roles.join(", ")}</div>}
+            {!!n.models_missing?.length && (
+              <div className="text-[11px] text-amber-300">not installed: {n.models_missing.join(", ")} → run <code>ollama pull {n.models_missing[0]}</code> on {n.node}</div>
+            )}
+          </div>
+        ))}
+        {nodes.length === 0 && <div className="text-slate-500">no nodes / unauthorized</div>}
+      </div>
+    </Panel>
+  );
+}
+
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="rounded-lg border border-line bg-panel px-2 py-2">
@@ -235,6 +259,7 @@ export function Researcher() {
         {token && !feed.denied && <ModelActivity llm={feed.llm} />}
         </div>
         <div className="space-y-4">
+          {token && !feed.denied && <NodeStatus nodes={feed.nodes} />}
           {token && !feed.denied && <MachinesPanel machines={feed.machines} />}
         </div>
       </div>
@@ -345,17 +370,7 @@ export function Researcher() {
           </div>
         </Panel>
 
-        <Panel title="Node status">
-          <div className="space-y-2 text-sm">
-            {nodes.map((n) => (
-              <div key={n.node} className="flex items-center justify-between">
-                <span>{n.node} <span className="text-slate-500 text-xs">({n.kind})</span></span>
-                <Badge color={n.healthy ? "green" : "red"}>{n.healthy ? "up" : "down"}</Badge>
-              </div>
-            ))}
-            {nodes.length === 0 && <div className="text-slate-500">no nodes / unauthorized</div>}
-          </div>
-        </Panel>
+        <NodeStatus nodes={nodes} />
 
         <MachinesPanel machines={feed.machines} />
 

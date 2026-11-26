@@ -35,6 +35,16 @@ from attack_agent.engine.llm.base import (
 from attack_agent.engine.llm.providers import make_provider
 
 ROLES = ("agent", "extractor", "twin", "judge", "sim_participant")
+HEALTH_FAILS_TO_DOWN = 2
+
+
+def _norm_model(name: str) -> str:
+    return name if ":" in name else f"{name}:latest"
+
+
+def _is_missing_model(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "404" in text or ("model" in text and "not found" in text)
 
 current_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "current_session_id", default=None
@@ -94,6 +104,9 @@ class Router:
         self.nodes = nodes
         self.roles = {role: list(roles.get(role, [])) for role in ROLES}
         self._health: dict[str, tuple[bool, float]] = {}
+        # consecutive failed health checks per node: one slow reply on a phone hotspot must not
+        # take a node out of rotation, so a node counts as down only after HEALTH_FAILS_TO_DOWN.
+        self._health_fails: dict[str, int] = {}
         self.calls: list[LLMCallRecord] = []
         self._sinks: list[Callable[[LLMCallRecord], None]] = []
         # Called when a call to a node *starts* (live "now running" view); same call_id as the
@@ -177,14 +190,39 @@ class Router:
         now = time.monotonic()
         if cached and not force and now - cached[1] < self.settings.health_cache_seconds:
             return cached[0]
-        ok = await provider.health(timeout=self.settings.health_timeout)
+        reachable = await provider.health(timeout=self.settings.health_timeout)
+        fails = 0 if reachable else self._health_fails.get(node, 0) + 1
+        self._health_fails[node] = fails
+        ok = fails < HEALTH_FAILS_TO_DOWN
         self._health[node] = (ok, now)
         return ok
+
+    def _mark_failed(self, node: str, exc: Exception) -> None:
+        """A call failed. "Model not found" is a routing problem for that one model, not a dead
+        node, so other models on the same node stay usable."""
+        if _is_missing_model(exc):
+            return
+        self._health_fails[node] = HEALTH_FAILS_TO_DOWN
+        self._health[node] = (False, time.monotonic())
+
+    def _skip(self, role: str, route: Route, kind: str) -> None:
+        """Record that a route was skipped because its node is marked down (shown on the
+        dashboard and stored, so a silent fallback is always visible)."""
+        self._record(role, route, kind, time.monotonic(), False, None, "skipped: node marked down")
 
     async def status(self) -> list[dict]:
         out = []
         for name, provider in self.nodes.items():
             ok = await self.node_healthy(name, force=True)
+            # which models the routing expects on this node, and which of them are not installed
+            wanted = sorted({r.model for routes in self.roles.values() for r in routes if r.node == name})
+            missing: list[str] = []
+            if ok and wanted and provider.kind == "ollama":
+                try:
+                    have = {_norm_model(m) for m in await provider.list_models() if m}
+                    missing = [m for m in wanted if _norm_model(m) not in have]
+                except Exception as exc:
+                    logger.debug("list_models failed for {}: {}", name, exc)
             out.append(
                 {
                     "node": name,
@@ -192,6 +230,9 @@ class Router:
                     "url": provider.url,
                     "has_key": provider.has_key,
                     "healthy": ok,
+                    "models_expected": wanted,
+                    "models_missing": missing,
+                    "roles": sorted({role for role, routes in self.roles.items() for r in routes[:1] if r.node == name}),
                 }
             )
         return out
@@ -262,6 +303,7 @@ class Router:
         last_error: Exception | None = None
         for route in self._routes(role):
             if not await self.node_healthy(route.node):
+                self._skip(role, route, "text")
                 continue
             provider = self.nodes[route.node]
             start, call_id = self._begin(role, route, "text")
@@ -273,7 +315,7 @@ class Router:
                 return text
             except Exception as exc:
                 last_error = exc
-                self._health[route.node] = (False, time.monotonic())
+                self._mark_failed(route.node, exc)
                 self._record(role, route, "text", start, False, None, str(exc)[:200], call_id)
                 logger.warning("route {} failed for role {}: {}", route, role, exc)
         raise RoutingError(f"all routes failed for role '{role}': {last_error}")
@@ -289,6 +331,7 @@ class Router:
         last_error: Exception | None = None
         for route in self._routes(role):
             if not await self.node_healthy(route.node):
+                self._skip(role, route, "json")
                 continue
             provider = self.nodes[route.node]
             start, call_id = self._begin(role, route, "json")
@@ -296,7 +339,7 @@ class Router:
                 raw = await provider.chat_json(route.model, messages, temp, schema)
             except Exception as exc:
                 last_error = exc
-                self._health[route.node] = (False, time.monotonic())
+                self._mark_failed(route.node, exc)
                 self._record(role, route, "json", start, False, None, str(exc)[:200], call_id)
                 continue
             data = extract_json(raw)
@@ -332,6 +375,7 @@ class Router:
         last_error: Exception | None = None
         for route in self._routes(role):
             if not await self.node_healthy(route.node):
+                self._skip(role, route, "stream")
                 continue
             provider = self.nodes[route.node]
             start, call_id = self._begin(role, route, "stream")
@@ -357,7 +401,7 @@ class Router:
                 if produced:
                     # already emitted tokens downstream; cannot safely retry another route
                     raise
-                self._health[route.node] = (False, time.monotonic())
+                self._mark_failed(route.node, exc)
                 logger.warning("stream route {} failed for role {}: {}", route, role, exc)
         raise RoutingError(f"all stream routes failed for role '{role}': {last_error}")
 
