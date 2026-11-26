@@ -421,3 +421,35 @@ def test_question_similarity_catches_rephrasings_not_new_topics():
                "What was the hardest part of preparing the demo?") >= 0.5
     assert sim("How did your exam go?", "How do you prepare for exams?") < 0.5
     assert sim("What do you like doing with your friends?", "What kind of music do you like?") < 0.5
+
+
+@pytest.mark.asyncio
+async def test_resume_mid_scenario_resends_it_and_finishes(tmp_path):
+    from attack_agent.storage.checkpoints import load_checkpoint
+
+    first = _fake_engine(tmp_path)
+    async for event in first.events():
+        if event["type"] == "await_message":
+            if event["context"] == "scenario":
+                break  # server "dies" while the participant reads the scenario
+            first.submit_message("I plan ahead and love helping people")
+    turns_before = first.state.turn_count
+
+    state = load_checkpoint(first.session_id, tmp_path)
+    assert state is not None and state.phase.value == "simulation"
+    resumed = SessionEngine(first.router, state=state, settings=first.settings)
+    types = []
+    async for event in resumed.events():
+        types.append(event["type"])
+        if event["type"] == "await_message":
+            resumed.submit_message("Who is this? I'll check with IT first.")
+        elif event["type"] == "await_questionnaire":
+            resumed.submit_questionnaire({i: 3 for i in range(1, 51)})
+    assert "resumed" in types and "scenario_message" in types
+    assert types[-1] == "complete"
+    assert resumed.state.real_outcome is not None
+    sim_replies = [t for t in resumed.state.turn_logs
+                   if t.phase.value == "simulation" and t.speaker == "participant"]
+    # only the replies given after the resume count (nothing double-counted from before)
+    assert resumed.state.turn_count == turns_before + len(sim_replies)
+    assert sum(1 for t in resumed.state.turn_logs if t.agent_action.startswith("run_scenario:")) == 1

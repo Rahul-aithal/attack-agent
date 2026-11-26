@@ -51,6 +51,13 @@ class AgentState(BaseModel):
     memory: list[dict] = Field(default_factory=list)
     # which example angles (per trait) have already been suggested, so they are not reused
     used_angles: dict[str, list[int]] = Field(default_factory=dict)
+    # ---- resume support (the session is checkpointed to outputs/checkpoints/<id>.json) ----
+    join_code: str | None = None
+    # why an aborted session ended: participant_quit | participant_timeout | researcher
+    abort_reason: str | None = None
+    phase_before_abort: Phase | None = None
+    # index into conversation_history where the scenario began (to redo it cleanly on resume)
+    sim_history_start: int | None = None
 
     def init_traits(self) -> None:
         if not self.trait_estimates:

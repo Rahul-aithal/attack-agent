@@ -278,3 +278,76 @@ def test_dashboard_does_not_start_a_session(client):
         pass
     row = next(r for r in c.app.state.manager.list_sessions() if r["session_id"] == sid)
     assert row["phase"] == "waiting"
+
+
+def _restart_server(c, settings):
+    """Simulate a server restart: a brand-new manager with the same output dir / database."""
+    node = FakeProvider("fake")
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    c.app.state.manager = SessionManager(settings, router=Router({"fake": node}, roles, settings))
+
+
+def test_rejoin_with_code_after_server_restart_continues_the_chat(client):
+    c, settings = client
+    created = c.post("/sessions", json={"consent": True}).json()
+    sid, code = created["session_id"], created["join_code"]
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:
+        _until(ws, "await_message")
+        ws.send_json({"kind": "message", "text": "I love planning trips with friends"})
+        _until(ws, "await_message")
+
+    _restart_server(c, settings)  # everything in memory is gone
+
+    joined = c.get(f"/join/{code}").json()
+    assert joined["session_id"] == sid and not joined["finished"] and joined["resumed"]
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:
+        replay = _until(ws, "await_message")
+        texts = [e.get("text") for e in replay if e["type"] == "participant_message"]
+        assert "I love planning trips with friends" in texts  # earlier chat restored
+        assert any(e["type"] == "resumed" for e in replay)
+        ws.send_json({"kind": "message", "text": "and I keep a strict calendar"})
+        _until(ws, "participant_message")
+    state = c.app.state.manager.get(sid).state
+    assert state.turn_count >= 1  # carried on from the saved turn count
+
+
+def test_timed_out_participant_can_rejoin_but_one_who_left_cannot(client):
+    import time
+
+    c, _ = client
+    c.app.state.manager.settings.participant_grace_seconds = 0.1
+    a = c.post("/sessions", json={"consent": True}).json()
+    with c.websocket_connect(f"/sessions/{a['session_id']}/stream") as ws:
+        _until(ws, "await_message")  # then the connection drops…
+    for _ in range(50):
+        if c.app.state.manager.get(a["session_id"]).state.aborted:
+            break
+        time.sleep(0.05)
+    again = c.get(f"/join/{a['join_code']}").json()
+    assert not again["finished"]  # timed out → reopened
+    assert not c.app.state.manager.get(a["session_id"]).state.aborted
+
+    b = c.post("/sessions", json={"consent": True}).json()
+    with c.websocket_connect(f"/sessions/{b['session_id']}/stream") as ws:
+        _until(ws, "await_message")
+        ws.send_json({"kind": "abort"})  # "Leave study"
+        _until(ws, "aborted")
+    left = c.get(f"/join/{b['join_code']}").json()
+    assert left["finished"] and left["reason"] == "left"
+    # …but the researcher can reopen it
+    r = c.post(f"/sessions/{b['session_id']}/reopen", headers={"X-Admin-Token": "tok"})
+    assert r.status_code == 200 and not c.app.state.manager.get(b["session_id"]).state.aborted
+
+
+def test_history_lists_previous_sessions_after_restart(client):
+    c, settings = client
+    created = c.post("/sessions", json={"consent": True}).json()
+    with c.websocket_connect(f"/sessions/{created['session_id']}/stream") as ws:
+        _until(ws, "await_message")
+    _restart_server(c, settings)
+    assert c.get("/sessions/history").status_code == 401
+    rows = c.get("/sessions/history", headers={"X-Admin-Token": "tok"}).json()["sessions"]
+    row = next(r for r in rows if r["session_id"] == created["session_id"])
+    assert row["join_code"] == created["join_code"]
+    assert row["status"] in ("interrupted", "aborted") and row["resumable"]

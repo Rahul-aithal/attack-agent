@@ -20,6 +20,7 @@ from sqlmodel import SQLModel, create_engine, select
 
 from attack_agent.config import Settings, get_settings
 from attack_agent.state import AgentState
+from attack_agent.storage.checkpoints import delete_checkpoint
 from attack_agent.storage.models import (
     Evidence,
     LLMCall,
@@ -227,8 +228,10 @@ def delete_participant_data(participant_id: str, settings: Settings | None = Non
     engine = get_engine(settings)
     with DBSession(engine) as db:
         sessions = db.exec(select(Session).where(Session.participant_id == participant_id)).all()
+        settings = settings or get_settings()
         for s in sessions:
             _purge_session(db, s.id)
+            delete_checkpoint(s.id, settings.output_dir)  # the checkpoint holds the chat too
         participant = db.get(Participant, participant_id)
         if participant is not None:
             db.delete(participant)

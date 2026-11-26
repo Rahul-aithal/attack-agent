@@ -100,6 +100,22 @@ session day. Set a fixed `ATTACK_AGENT_ADMIN_TOKEN` in `.env` so the token survi
    itself and restores the chat. The server waits `ATTACK_AGENT_PARTICIPANT_GRACE_SECONDS`
    (default 120) before aborting a participant who doesn't come back.
 
+### Previous sessions and rejoining
+
+Every session is checkpointed to `outputs/checkpoints/<session>.json` after each turn and phase,
+so nothing is lost if the server restarts.
+
+- **Participant rejoining:** they open the participant page and enter the **same code**. The chat
+  is restored and continues where it stopped: after a dropped connection, a refresh, a timeout
+  (more than `ATTACK_AGENT_PARTICIPANT_GRACE_SECONDS` away) or a server restart. A session
+  interrupted during the scenario restarts the scenario from its first message.
+- **Researcher:** the dashboard's **Previous sessions** panel lists every session (live,
+  checkpointed and saved), with code, time, status (live / complete / aborted / interrupted),
+  replies, outcome and device. **Open** shows it, **Resume** makes an aborted or interrupted
+  session live again (needed if the participant pressed *Leave study*), **report** opens its
+  report. API: `GET /sessions/history`, `POST /sessions/{id}/reopen`.
+- Deleting a session (`DELETE /sessions/{id}`, or a participant's data) also deletes its checkpoint.
+
 Agent messages adapt to the participant's device (shorter on phones); the device is stored with
 the session. The simulated request arrives as an ordinary message from a new contact
 ("Chris · IT Support") so it doesn't stand out as the test; the debrief explains it afterwards.
@@ -198,7 +214,8 @@ written to disk or logs, and redacted from exports.
 `GET /nodes` · `PUT /routing` · `POST /byok` · `GET|POST /experiments` · `GET /export.csv` ·
 `DELETE /sessions/{id}` · `DELETE /participants/{id}` (delete-my-data) · `GET /join/{code}` ·
 `GET /sessions` · `WS /admin/stream` (dashboard feed) · `POST|GET /telemetry` ·
-`GET /sessions/{id}/report` · `GET /report`.
+`GET /sessions/{id}/report` · `GET /report` · `GET /sessions/history` ·
+`POST /sessions/{id}/reopen`.
 
 Researcher endpoints require the admin token (`X-Admin-Token` header or `?admin_token=`). Interactive
 docs at `/docs`. Participant streams never carry live trait data.

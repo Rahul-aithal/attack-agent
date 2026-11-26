@@ -126,10 +126,36 @@ def create_app() -> FastAPI:
         """Resolve a participant join code (given out by the researcher) to its session."""
         mgr: SessionManager = app.state.manager
         sid = mgr.resolve_join_code(code)
-        engine = mgr.get(sid) if sid else None
+        engine = mgr.get_or_restore(sid) if sid else None
         if engine is None:
             raise HTTPException(status_code=404, detail="no session with that code")
-        return {"session_id": sid, "join_code": mgr.join_code(sid), "finished": engine.finished}
+        s = engine.state
+        if s.aborted:
+            if not mgr.can_participant_resume(engine):
+                # they pressed "Leave study"; only the researcher can reopen it
+                return {"session_id": sid, "join_code": s.join_code, "finished": True,
+                        "reason": "left"}
+            engine = mgr.reopen(sid)  # timed out (connection lost): carry on where they were
+            s = engine.state
+        done = s.phase.value == "complete"
+        return {"session_id": sid, "join_code": s.join_code, "finished": done,
+                "reason": "complete" if done else None, "resumed": bool(s.conversation_history)}
+
+    @app.get("/sessions/history", dependencies=[Depends(require_admin)])
+    async def session_history():
+        """Every session: live, checkpointed (survives restarts) and saved to the database."""
+        return {"sessions": await asyncio.to_thread(app.state.manager.history)}
+
+    @app.post("/sessions/{session_id}/reopen", dependencies=[Depends(require_admin)])
+    async def reopen_session(session_id: str):
+        """Researcher: make a previous (aborted or interrupted) session live again so the
+        participant can rejoin with the same code."""
+        mgr: SessionManager = app.state.manager
+        engine = mgr.reopen(session_id)
+        if engine is None:
+            raise HTTPException(status_code=404, detail="no checkpoint for that session")
+        return {"session_id": session_id, "join_code": engine.state.join_code,
+                "phase": engine.state.phase.value}
 
     @app.get("/sessions", dependencies=[Depends(require_admin)])
     async def list_sessions():
@@ -204,9 +230,14 @@ def create_app() -> FastAPI:
 
     @app.delete("/sessions/{session_id}", dependencies=[Depends(require_admin)])
     async def delete(session_id: str):
-        app.state.manager.sessions.pop(session_id, None)
+        from attack_agent.storage.checkpoints import delete_checkpoint
+
+        mgr: SessionManager = app.state.manager
+        mgr.sessions.pop(session_id, None)
         removed = delete_session(session_id)
-        return {"deleted": removed}
+        # the checkpoint holds the whole chat: remove it too ("delete my data")
+        removed_ckpt = delete_checkpoint(session_id, mgr.settings.output_dir)
+        return {"deleted": removed or removed_ckpt}
 
     @app.delete("/participants/{participant_id}", dependencies=[Depends(require_admin)])
     async def delete_participant(participant_id: str):
@@ -265,7 +296,7 @@ def create_app() -> FastAPI:
     async def stream(websocket: WebSocket, session_id: str):
         await websocket.accept()
         mgr: SessionManager = app.state.manager
-        engine = mgr.get(session_id)
+        engine = mgr.get_or_restore(session_id)  # also brings back sessions after a restart
         if engine is None:
             await websocket.send_json({"type": "error", "message": "session not found"})
             await websocket.close()

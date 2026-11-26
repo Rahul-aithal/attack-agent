@@ -57,7 +57,8 @@ export function Participant() {
     setJoinError("");
     const found = await joinByCode(joinCode);
     if (!found) { setJoinError("No session with that code — check it with the researcher."); return; }
-    if (found.finished) { setJoinError("That session has already finished."); return; }
+    if (found.finished && found.reason === "left") { setJoinError("You left this session earlier. Ask the researcher to reopen it if you'd like to continue."); return; }
+    if (found.finished) { setJoinError("That session has already finished. Thank you!"); return; }
     enter(found.session_id, found.join_code);
   }
 
@@ -95,6 +96,7 @@ export function Participant() {
             <Button type="submit" disabled={!joinCode.trim()}>I consent — join</Button>
           </form>
           {joinError && <div className="text-xs text-rose-400 mt-2">{joinError}</div>}
+          <div className="mt-2 text-xs text-slate-500">Got disconnected earlier? Enter the same code to continue where you left off.</div>
           <div className="mt-3 text-xs text-slate-500">
             No code? <button className="underline hover:text-slate-300" onClick={start}>I consent — start a new session</button>
           </div>

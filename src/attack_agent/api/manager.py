@@ -17,7 +17,14 @@ from loguru import logger
 from attack_agent.config import Settings, get_settings
 from attack_agent.engine.llm import LLMCallRecord, Route, Router
 from attack_agent.engine.session_engine import SessionEngine
+from attack_agent.schemas import Outcome, Phase
 from attack_agent.storage import ensure_participant, persist_session
+from attack_agent.storage.checkpoints import (
+    find_by_join_code,
+    list_checkpoints,
+    load_checkpoint,
+    save_checkpoint,
+)
 
 # Join codes avoid look-alike characters (0/O, 1/I/L) so they can be read out loud.
 JOIN_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -141,22 +148,144 @@ class SessionManager:
                 ensure_participant(participant_id, settings=self.settings)
             except Exception as exc:  # storage is best-effort for a live session
                 logger.warning("ensure_participant failed: {}", exc)
-        self.sessions[sid] = engine
-        code = self._new_join_code()
-        self._join_codes[code] = sid
-        self._meta[sid] = {
-            "join_code": code,
-            "participant_id": participant_id,
-            "experiment_id": experiment_id,
-            "config": config or {},
-        }
+        engine.state.join_code = self._new_join_code()
+        meta = {"participant_id": participant_id, "experiment_id": experiment_id,
+                "config": config or {}}
         if experiment_id and experiment_id in self.experiments:
             self.experiments[experiment_id].session_ids.append(sid)
+        self._register(engine, meta)
+        try:  # checkpoint straight away so the code works even if the server restarts first
+            save_checkpoint(engine.state, self.settings.output_dir)
+        except Exception as exc:
+            logger.warning("initial checkpoint failed: {}", exc)
+        return engine
+
+    def _register(self, engine: SessionEngine, meta: dict) -> None:
+        sid = engine.session_id
+        self.sessions[sid] = engine
+        code = engine.state.join_code
+        if code:
+            self._join_codes[code] = sid
+        self._meta[sid] = {**self._meta.get(sid, {}), **meta, "join_code": code}
+        self._persisted.discard(sid)
         # Save the session when it ends, independent of who is connected. The sockets used to
         # do this, so a participant closing the tab (abort) meant the session was never stored.
         self._watchers[sid] = asyncio.create_task(self._persist_when_done(sid, engine))
         self._broadcast_sessions()
+
+    # ------------------------------------------------------------------ previous sessions
+    def get_or_restore(self, session_id: str) -> SessionEngine | None:
+        """The live engine, or one rebuilt from its checkpoint (e.g. after a server restart)."""
+        engine = self.sessions.get(session_id)
+        if engine is not None:
+            return engine
+        state = load_checkpoint(session_id, self.settings.output_dir)
+        if state is None:
+            return None
+        engine = SessionEngine(self.router, state=state, settings=self.settings)
+        if state.aborted or state.phase == Phase.COMPLETE:
+            engine.mark_finished()  # viewable (history replay) but not running
+        self._register(engine, {"restored": True})
+        logger.info("restored session {} from checkpoint (phase {})", session_id, state.phase.value)
         return engine
+
+    def can_participant_resume(self, engine: SessionEngine) -> bool:
+        s = engine.state
+        return not s.aborted or s.abort_reason == "participant_timeout"
+
+    def reopen(self, session_id: str) -> SessionEngine | None:
+        """Continue an aborted session from where it stopped (rejoin after a timeout, or the
+        researcher reopening it). Returns the new live engine."""
+        engine = self.get_or_restore(session_id)
+        if engine is None:
+            return None
+        s = engine.state
+        if not s.aborted:
+            return engine
+        # undo the abort
+        s.aborted = False
+        s.phase = s.phase_before_abort or Phase.PROFILING
+        if s.real_outcome == Outcome.INCOMPLETE:
+            s.real_outcome = None
+        s.abort_reason = None
+        s.interventions.append({"type": "reopened", "turn": s.turn_count, "phase": s.phase.value,
+                                "at": datetime.now(UTC).isoformat()})
+        fresh = SessionEngine(self.router, state=s, settings=self.settings)
+        self._register(fresh, {})
+        save_checkpoint(s, self.settings.output_dir)
+        logger.info("reopened session {} at phase {}", session_id, s.phase.value)
+        return fresh
+
+    def history(self) -> list[dict]:
+        """Every session this server knows about: live ones plus everything checkpointed or
+        saved to the database (newest first)."""
+        rows: dict[str, dict] = {}
+        for data in list_checkpoints(self.settings.output_dir):
+            sid = data.get("session_id")
+            if not sid:
+                continue
+            logs = data.get("turn_logs") or []
+            rows[sid] = {
+                "session_id": sid,
+                "join_code": data.get("join_code"),
+                "started_at": data.get("started_at"),
+                "phase": data.get("phase"),
+                "aborted": data.get("aborted", False),
+                "abort_reason": data.get("abort_reason"),
+                "participant_messages": sum(1 for x in logs if x.get("speaker") == "participant"),
+                "real_outcome": data.get("real_outcome"),
+                "match_flag": data.get("match_flag"),
+                "device": data.get("device"),
+                "steered": bool(data.get("interventions")),
+                "has_checkpoint": True,
+            }
+        try:
+            from sqlmodel import Session as DBSession
+            from sqlmodel import select
+
+            from attack_agent.storage.models import Session as SessionRow
+            from attack_agent.storage.repository import get_engine
+
+            with DBSession(get_engine(self.settings)) as db:
+                for r in db.exec(select(SessionRow)).all():
+                    row = rows.setdefault(r.id, {
+                        "session_id": r.id, "join_code": None,
+                        "started_at": r.started_at.isoformat(), "phase": r.phase,
+                        "aborted": r.aborted, "abort_reason": None,
+                        "participant_messages": r.turn_count, "real_outcome": r.real_outcome,
+                        "match_flag": r.match_flag,
+                        "device": (r.config_snapshot or {}).get("device"),
+                        "steered": bool((r.config_snapshot or {}).get("researcher_steered")),
+                        "has_checkpoint": False,
+                    })
+                    row["saved"] = True
+        except Exception as exc:
+            logger.debug("history: database read failed: {}", exc)
+        for sid, engine in self.sessions.items():
+            row = rows.setdefault(sid, {"session_id": sid, "has_checkpoint": False})
+            s = engine.state
+            row.update({
+                "join_code": s.join_code, "started_at": s.started_at.isoformat(),
+                "phase": s.phase.value, "aborted": s.aborted, "abort_reason": s.abort_reason,
+                "real_outcome": s.real_outcome.value if s.real_outcome else None,
+                "match_flag": s.match_flag, "live": not engine.finished,
+            })
+        out = []
+        for row in rows.values():
+            row.setdefault("saved", False)
+            row.setdefault("live", False)
+            finished = row.get("phase") == "complete" or row.get("aborted")
+            # interrupted = the server stopped while it was running; it can be resumed
+            row["status"] = (
+                "live" if row["live"] else "complete" if row.get("phase") == "complete"
+                else "aborted" if row.get("aborted") else "interrupted"
+            )
+            row["resumable"] = bool(row.get("has_checkpoint")) and not row["live"] and (
+                not finished or bool(row.get("aborted"))
+            )
+            out.append(row)
+        out.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+        return out
 
     def _new_join_code(self) -> str:
         while True:
@@ -165,10 +294,13 @@ class SessionManager:
                 return code
 
     def join_code(self, session_id: str) -> str | None:
-        return self._meta.get(session_id, {}).get("join_code")
+        engine = self.sessions.get(session_id)
+        return engine.state.join_code if engine else self._meta.get(session_id, {}).get("join_code")
 
     def resolve_join_code(self, code: str) -> str | None:
-        return self._join_codes.get(code.strip().upper().replace(" ", "").replace("-", ""))
+        code = code.strip().upper().replace(" ", "").replace("-", "")
+        # live sessions first, then sessions saved before a restart
+        return self._join_codes.get(code) or find_by_join_code(code, self.settings.output_dir)
 
     # ------------------------------------------------------------------ participant presence
     def claim_participant_socket(self, session_id: str, ws: Any) -> Any | None:
@@ -212,7 +344,7 @@ class SessionManager:
         self._pending_aborts.pop(session_id, None)
         if not self._participant_sockets.get(session_id) and not engine.finished:
             logger.info("participant did not return; aborting {}", session_id)
-            engine.abort()
+            engine.abort(reason="participant_timeout")
 
     # ------------------------------------------------------------------ researcher feed
     def admin_subscribe(self) -> asyncio.Queue[dict]:

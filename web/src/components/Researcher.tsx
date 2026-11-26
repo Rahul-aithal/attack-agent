@@ -6,6 +6,7 @@ import { useSession } from "../useSession";
 import { Convergence, TraitRadar } from "./charts";
 import { MachinesPanel, ModelActivity } from "./Monitor";
 import { Memory, Steering, Transcript } from "./Steering";
+import { PreviousSessions } from "./History";
 import { Badge, Button, Input, Panel } from "./ui";
 
 const ROLES = ["agent", "extractor", "twin", "judge", "sim_participant"];
@@ -256,6 +257,10 @@ export function Researcher() {
             <Button onClick={() => sessionId && attach(sessionId)} disabled={!token || !sessionId}>Attach</Button>
           </div>
         </Panel>
+        {token && !feed.denied && (
+          <PreviousSessions token={token} onOpen={attach}
+            refreshKey={feed.sessions.map((r) => `${r.session_id}:${r.phase}:${r.finished}`).join(",")} />
+        )}
         {token && !feed.denied && <ModelActivity llm={feed.llm} />}
         </div>
         <div className="space-y-4">

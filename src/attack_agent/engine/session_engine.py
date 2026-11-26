@@ -36,6 +36,7 @@ from attack_agent.io.twin_writer import write_twin_data
 from attack_agent.react.loop import ReActLoop
 from attack_agent.schemas import ALL_TRAITS, Outcome, Phase, TurnLog
 from attack_agent.state import AgentState
+from attack_agent.storage.checkpoints import save_checkpoint
 
 DONE = object()  # sentinel pushed to every subscriber when the session finishes
 MAX_MESSAGE_CHARS = 2000
@@ -79,6 +80,12 @@ class SessionEngine:
         self._history: list[Any] = []
         self._steer: dict | None = None
         self._finish_requested = False
+        self._abort_reason = "participant_quit"
+        # A session rebuilt from a checkpoint (server restart, rejoin after a timeout) carries on
+        # from its saved phase instead of starting over.
+        self._resumed = state is not None and (
+            bool(state.conversation_history) or state.phase not in (Phase.CONSENT, Phase.PROFILING)
+        )
         self._subscribers: list[asyncio.Queue[Any]] = []
         self._input: asyncio.Queue[dict] = asyncio.Queue()
         self._task: asyncio.Task | None = None
@@ -114,6 +121,25 @@ class SessionEngine:
             if queue in self._subscribers:
                 self._subscribers.remove(queue)
 
+    def mark_finished(self) -> None:
+        """For a restored session that already ended: replay its history to viewers, then
+        report it as finished without running anything."""
+        if self._task is not None:
+            return
+
+        async def _replay_only() -> None:
+            try:
+                await self._replay()
+                if self.state.phase == Phase.COMPLETE:
+                    await self._finish()
+                elif self.state.aborted:
+                    await self._emit("phase_change", phase=Phase.ABORTED.value)
+                    await self._emit("aborted", reason=self.state.abort_reason)
+            finally:
+                self._publish(DONE)
+
+        self._task = asyncio.create_task(_replay_only())
+
     @property
     def started(self) -> bool:
         return self._task is not None
@@ -128,7 +154,9 @@ class SessionEngine:
     def submit_questionnaire(self, responses: dict[int, int]) -> None:
         self._input.put_nowait({"kind": "questionnaire", "responses": responses})
 
-    def abort(self) -> None:
+    def abort(self, reason: str = "participant_quit") -> None:
+        if not self._aborted:
+            self._abort_reason = reason
         self._aborted = True
         self._input.put_nowait({"kind": "abort"})
 
@@ -182,6 +210,63 @@ class SessionEngine:
     async def _set_phase(self, phase: Phase) -> None:
         self.state.phase = phase
         await self._emit("phase_change", phase=phase.value)
+        self._checkpoint()
+
+    # ------------------------------------------------------------------ checkpoints / resume
+    def _checkpoint(self) -> None:
+        """Save the full session state so it can be resumed after a restart or a rejoin."""
+        try:
+            save_checkpoint(self.state, self.settings.output_dir)
+        except Exception as exc:  # never let disk trouble break a live session
+            logger.warning("checkpoint failed for {}: {}", self.session_id, exc)
+
+    def _reset_scenario(self) -> None:
+        """Undo a half-finished scenario so it can be run again from its first message."""
+        s = self.state
+        if s.sim_history_start is not None:
+            del s.conversation_history[s.sim_history_start:]
+        redone = [t for t in s.turn_logs if t.phase == Phase.SIMULATION and t.speaker == "participant"]
+        s.turn_count -= len(redone)
+        s.turn_logs = [t for t in s.turn_logs if t.phase != Phase.SIMULATION]
+        s.scenario_exchanges = []
+        s.outcome_evaluation = None
+        s.sim_history_start = None
+
+    async def _replay(self) -> None:
+        """Re-emit what a reconnecting UI needs to rebuild the view of a restored session."""
+        s = self.state
+        mid_scenario = s.phase in (Phase.TWIN_HANDOFF, Phase.SIMULATION) and s.real_outcome is None
+        for log in s.turn_logs:
+            if mid_scenario and log.phase == Phase.SIMULATION:
+                continue  # the scenario is sent again when it restarts
+            if log.speaker == "participant":
+                await self._emit("participant_message", text=log.message)
+            elif log.agent_action.startswith("run_scenario") or log.phase == Phase.SIMULATION:
+                await self._emit("scenario_message", message=log.message, resumed=True)
+            else:
+                await self._emit("agent_message", text=log.message)
+        for entry in s.memory:
+            self._publish({"type": "memory", "session_id": self.session_id, **entry})
+        if s.turn_count:
+            await self._profile_event()
+        if s.twin_prediction:
+            p = s.twin_prediction
+            await self._emit(
+                "twin_prediction", predicted_outcome=p.predicted_outcome.value,
+                confidence=round(p.prediction_confidence, 3),
+                principles=[x.value for x in p.principles_used], reasoning=p.reasoning,
+                source=p.source, samples=p.samples,
+            )
+        if s.real_outcome is not None and not mid_scenario:
+            await self._emit(
+                "outcome", real_outcome=s.real_outcome.value,
+                twin_outcome=s.twin_prediction.predicted_outcome.value if s.twin_prediction else None,
+                match_flag=s.match_flag,
+                principle=s.current_principle.value if s.current_principle else None,
+                rationale=s.outcome_evaluation.rationale if s.outcome_evaluation else None,
+                judged_by=s.outcome_evaluation.judged_by if s.outcome_evaluation else None,
+            )
+        await self._emit("resumed", phase=s.phase.value)
 
     async def _next_input(self) -> dict:
         if self._aborted and self._input.empty():
@@ -218,11 +303,46 @@ class SessionEngine:
             self._publish(DONE)
 
     async def _run(self) -> None:
-        await self._set_phase(Phase.CONSENT)
-        self.state.consent_given = True
+        s = self.state
+        if self._resumed:
+            await self._replay()
+            if s.phase in (Phase.DEBRIEF, Phase.COMPLETE):
+                return await self._finish()
+        else:
+            await self._set_phase(Phase.CONSENT)
+            s.consent_given = True
 
         # ---- PROFILING ----
-        await self._set_phase(Phase.PROFILING)
+        if not self._resumed or s.phase in (Phase.CONSENT, Phase.PROFILING):
+            await self._set_phase(Phase.PROFILING)
+            if not s.conversation_history:
+                await self._opening()
+            if not await self._profiling_loop():
+                return await self._do_abort()
+
+        # ---- TWIN HANDOFF + SIMULATION (until the scenario has been answered) ----
+        if s.real_outcome is None:
+            if s.twin_prediction is None or s.current_principle is None:
+                principle, reason, effectiveness = await self._twin_handoff()
+            else:
+                principle, reason, effectiveness = s.current_principle, "resumed", 0.5
+                self._reset_scenario()  # redo an interrupted scenario from its first message
+            await self._set_phase(Phase.SIMULATION)
+            await self._run_simulation(principle, reason, effectiveness)
+            if self._aborted:
+                return await self._do_abort()
+            await self._evaluation(principle)
+
+        # ---- QUESTIONNAIRE ----
+        if self.settings.questionnaire_enabled and s.questionnaire is None:
+            await self._set_phase(Phase.QUESTIONNAIRE)
+            await self._run_questionnaire()
+            if self._aborted:
+                return await self._do_abort()
+
+        await self._finish()
+
+    async def _opening(self) -> None:
         try:
             opening = clean_reply(
                 await self.loop.conversation.generate_opening(self.state.device)
@@ -234,14 +354,17 @@ class SessionEngine:
         await self._emit("agent_message", text=opening)
         self.state.conversation_history.append({"role": "assistant", "content": opening})
         self.loop.log_agent_turn(self.state, opening, "start_conversation")
+        self._checkpoint()
 
+    async def _profiling_loop(self) -> bool:
+        """Chat until the profile is complete. False means the session was aborted."""
         while True:
             await self._emit("await_message", context="profiling")
             msg = await self._next_input()
             if self._is_abort(msg):
-                return await self._do_abort()
+                return False
             if msg["kind"] == "finish_profiling":
-                break
+                return True
             if msg["kind"] != "message":
                 continue
             text = msg["text"].strip()
@@ -250,12 +373,13 @@ class SessionEngine:
             await self._emit("participant_message", text=text)
             complete = await self._process_profiling_turn(text)
             await self._profile_event()
+            self._checkpoint()
             if (complete and self.settings.stopping_rule) or self._finish_requested:
-                break
+                return True
             if self.state.turn_count >= self.settings.max_turns:
-                break
+                return True
 
-        # ---- TWIN HANDOFF ----
+    async def _twin_handoff(self):
         await self._set_phase(Phase.TWIN_HANDOFF)
         try:
             write_twin_data(self.state, self.settings.output_dir)
@@ -287,14 +411,10 @@ class SessionEngine:
                 self.state.scenario_message = None  # regenerate for the new principle
             principle, reason, effectiveness = final
         self.state.current_principle = principle
+        self._checkpoint()
+        return principle, reason, effectiveness
 
-        # ---- SIMULATION ----
-        await self._set_phase(Phase.SIMULATION)
-        await self._run_simulation(principle, reason, effectiveness)
-        if self._aborted:
-            return await self._do_abort()
-
-        # ---- EVALUATION ----
+    async def _evaluation(self, principle) -> None:
         await self._set_phase(Phase.EVALUATION)
         pred = self.state.twin_prediction
         # A placeholder/fallback "prediction" was never really made, so it can't match or miss.
@@ -320,14 +440,7 @@ class SessionEngine:
             ),
         )
 
-        # ---- QUESTIONNAIRE ----
-        if self.settings.questionnaire_enabled:
-            await self._set_phase(Phase.QUESTIONNAIRE)
-            await self._run_questionnaire()
-            if self._aborted:
-                return await self._do_abort()
-
-        # ---- DEBRIEF ----
+    async def _finish(self) -> None:
         await self._set_phase(Phase.DEBRIEF)
         await self._emit(
             "debrief",
@@ -424,6 +537,8 @@ class SessionEngine:
             state, principle
         )
         state.scenario_message = scenario
+        if state.sim_history_start is None:
+            state.sim_history_start = len(state.conversation_history)
         self.loop.log_agent_turn(state, scenario, f"run_scenario:{principle.value}")
 
         # Anything typed before the scenario message is shown is not a reply to it.
@@ -474,6 +589,8 @@ class SessionEngine:
                 break
             if exchange < max_exchanges - 1:
                 scenario = await self.simulator.generate_followup(state, principle, sim_history)
+                self.loop.log_agent_turn(state, scenario, f"run_scenario_followup:{principle.value}")
+            self._checkpoint()
 
         state.outcome_evaluation = final_eval
         state.real_outcome = final_eval.outcome if final_eval else Outcome.INCOMPLETE
@@ -595,6 +712,9 @@ class SessionEngine:
         return self._aborted or msg.get("kind") == "abort"
 
     async def _do_abort(self) -> None:
+        if self.state.phase != Phase.ABORTED:
+            self.state.phase_before_abort = self.state.phase
+        self.state.abort_reason = self._abort_reason
         self.state.aborted = True
         if self.state.real_outcome is None:
             self.state.real_outcome = Outcome.INCOMPLETE

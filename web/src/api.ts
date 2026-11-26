@@ -14,8 +14,27 @@ export async function createSession(participantId?: string, experimentId?: strin
   return await res.json();
 }
 
+export interface PastSession {
+  session_id: string; join_code: string | null; started_at: string | null; phase: string | null;
+  status: "live" | "complete" | "aborted" | "interrupted"; abort_reason?: string | null;
+  participant_messages?: number; real_outcome?: string | null; match_flag?: boolean | null;
+  device?: string | null; steered?: boolean; saved: boolean; resumable: boolean; live: boolean;
+}
+
+export async function getHistory(token: string): Promise<PastSession[]> {
+  const res = await fetch(`${base}/sessions/history`, { headers: { "X-Admin-Token": token } });
+  if (!res.ok) throw new Error("unauthorized");
+  return (await res.json()).sessions;
+}
+
+export async function reopenSession(token: string, sessionId: string): Promise<{ join_code: string; phase: string }> {
+  const res = await fetch(`${base}/sessions/${sessionId}/reopen`, { method: "POST", headers: { "X-Admin-Token": token } });
+  if (!res.ok) throw new Error((await res.json()).detail ?? "reopen failed");
+  return await res.json();
+}
+
 /** Resolve a join code from the researcher to a session id (null if unknown). */
-export async function joinByCode(code: string): Promise<{ session_id: string; join_code: string; finished: boolean } | null> {
+export async function joinByCode(code: string): Promise<{ session_id: string; join_code: string; finished: boolean; reason?: string | null; resumed?: boolean } | null> {
   const res = await fetch(`${base}/join/${encodeURIComponent(code.trim())}`);
   if (!res.ok) return null;
   return await res.json();
