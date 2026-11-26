@@ -5,7 +5,7 @@ import type { SessionState } from "../useSession";
 import { useSession } from "../useSession";
 import { Convergence, TraitRadar } from "./charts";
 import { MachinesPanel, ModelActivity } from "./Monitor";
-import { Steering, Transcript } from "./Steering";
+import { Memory, Steering, Transcript } from "./Steering";
 import { Badge, Button, Input, Panel } from "./ui";
 
 const ROLES = ["agent", "extractor", "twin", "judge", "sim_participant"];
@@ -299,6 +299,7 @@ export function Researcher() {
         )}
         <Transcript s={state} />
         <Steering s={state} steer={steer} finishProfiling={finishProfiling} />
+        <Memory s={state} />
         <ModelActivity llm={feed.llm} sessionFilter={sessionId} />
         <Panel title="Big Five — inferred vs self-report">
           <TraitRadar traits={state.traits} selfReport={state.selfReport} />

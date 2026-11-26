@@ -24,6 +24,7 @@ from typing import Any
 from loguru import logger
 
 from attack_agent.config import Settings, get_settings
+from attack_agent.engine.conversation import extract_questions, find_repeat
 from attack_agent.engine.evaluator import OutcomeEvaluator
 from attack_agent.engine.llm import RoleClient, Router, current_session_id
 from attack_agent.engine.questionnaire import questionnaire_items, score_responses
@@ -41,7 +42,12 @@ MAX_MESSAGE_CHARS = 2000
 
 # Used when every model route fails for a turn, so one bad call never ends the session.
 FALLBACK_OPENING = "Hi, I'm Alex! Thanks for chatting with me. How has your day been so far?"
-FALLBACK_REPLY = "Sorry, I lost my train of thought for a second. Could you tell me a bit more about that?"
+FALLBACK_REPLIES = [
+    "Sorry, I lost my train of thought for a second. Could you tell me a bit more about that?",
+    "Ha, my mind wandered for a moment. What was that like for you?",
+    "Interesting. What happened next?",
+    "I'd love to hear more. How did that turn out?",
+]
 
 
 class SessionEngine:
@@ -338,6 +344,7 @@ class SessionEngine:
     async def _process_profiling_turn(self, text: str) -> bool:
         state = self.state
         state.turn_count += 1
+        self._remember_answer(text)
         state.conversation_history.append({"role": "user", "content": text})
 
         analysis = await self.loop.observe(state, text)
@@ -377,6 +384,25 @@ class SessionEngine:
         if reply is not None:
             self.loop.log_agent_turn(state, reply, "continue_conversation")
         return complete
+
+    def _remember_answer(self, answer: str) -> None:
+        """Pair the participant's answer with the question the agent just asked (memory)."""
+        last_agent = next(
+            (m["content"] for m in reversed(self.state.conversation_history)
+             if m["role"] == "assistant"),
+            "",
+        )
+        questions = extract_questions(last_agent)
+        if not questions:
+            return
+        entry = {
+            "turn": self.state.turn_count,
+            "topic": self.loop.conversation.topic,
+            "question": questions[-1],
+            "answer": answer[:400],
+        }
+        self.state.memory.append(entry)
+        self._publish({"type": "memory", "session_id": self.session_id, **entry})
 
     async def _make_prediction(self, principle):
         # manual override takes priority if a readable file exists
@@ -502,7 +528,7 @@ class SessionEngine:
         auto_focus = conv.plan_focus(state)
         focus = (steer or {}).get("focus") or auto_focus
         note = (steer or {}).get("note")
-        conv.commit_focus(focus)
+        conv.commit_focus(focus, state)
         await self._emit(
             "agent_plan",
             turn=state.turn_count,
@@ -525,8 +551,31 @@ class SessionEngine:
                 text = clean_reply(await conv.generate_reply(state, focus, note))
             except Exception as exc:
                 logger.warning("reply generation failed on every route: {}", exc)
+        # Repeat guard: if the reply re-asks an earlier question, regenerate once naming it.
+        repeated = find_repeat(text, state) if text else None
+        if repeated:
+            retry_note = (
+                f"Your previous draft repeated a question you already asked (\"{repeated}\"). "
+                "Ask about something new that is not in the list of questions already asked."
+            )
+            try:
+                retry = clean_reply(
+                    await conv.generate_reply(state, focus, f"{note} {retry_note}" if note else retry_note)
+                )
+            except Exception as exc:
+                logger.warning("repeat-guard regeneration failed: {}", exc)
+                retry = ""
+            still = find_repeat(retry, state) if retry else repeated
+            await self._emit(
+                "agent_rewrite", turn=state.turn_count, repeated=repeated, draft=text,
+                fixed=bool(retry and not still),
+            )
+            if retry and not still:
+                text = retry
         if not text:
-            text = FALLBACK_REPLY
+            # rotate so a run of failures doesn't produce the same sentence twice
+            used = {m["content"] for m in state.conversation_history if m["role"] == "assistant"}
+            text = next((f for f in FALLBACK_REPLIES if f not in used), FALLBACK_REPLIES[0])
         if not any(_EMOJI.search(m["content"]) for m in state.conversation_history if m["role"] == "user"):
             # mirror the participant: no emojis unless they use them
             text = re.sub(r"[ \t]{2,}", " ", _EMOJI.sub("", text)).strip() or text

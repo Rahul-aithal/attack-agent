@@ -368,3 +368,56 @@ async def test_unreachable_twin_is_marked_fallback_and_never_matches(tmp_path):
     assert engine.state.twin_prediction.source == "fallback"
     assert engine.state.real_outcome is not None
     assert engine.state.match_flag is None  # no real prediction, so no MATCH/MISS
+
+
+class _RepeatingAgent(FakeProvider):
+    """Always asks the same question unless told it repeated itself."""
+
+    async def chat_text(self, model, messages, temperature):
+        prompt = " ".join(m["content"] for m in messages).lower()
+        if "repeated a question" in prompt:
+            self.calls += 1
+            return "Nice. How do you usually plan a trip with friends?"
+        if "short opening message" in prompt or "signals" in prompt or "outcome" in prompt:
+            return await super().chat_text(model, messages, temperature)
+        self.calls += 1
+        return "Cool! What do you like to do on weekends?"
+
+
+@pytest.mark.asyncio
+async def test_memory_pairs_questions_with_answers_and_repeat_guard_rewrites(tmp_path):
+    settings = Settings(min_turns=3, max_turns=3, health_cache_seconds=0, output_dir=tmp_path,
+                        questionnaire_enabled=False, stopping_rule=False)
+    agent, other = _RepeatingAgent("agent"), FakeProvider("other")
+    roles = {r: [Route("other", "m")] for r in ["extractor", "twin", "judge", "sim_participant"]}
+    roles["agent"] = [Route("agent", "m")]
+    engine = SessionEngine(Router({"agent": agent, "other": other}, roles, settings),
+                           settings=settings)
+    rewrites, replies = [], []
+    phase = ""
+    answers = iter(["Pretty good, busy week", "I play football on weekends", "Mostly I travel"])
+    async for event in engine.events():
+        if event["type"] == "phase_change":
+            phase = event["phase"]
+        elif event["type"] == "agent_rewrite":
+            rewrites.append(event)
+        elif event["type"] == "agent_message" and phase == "profiling":
+            replies.append(event["text"])
+        elif event["type"] == "await_message":
+            engine.submit_message(next(answers, "ok"))
+    mem = engine.state.memory
+    assert mem[0]["answer"] == "Pretty good, busy week"  # answer to the opening question
+    assert mem[1]["question"] == "What do you like to do on weekends?"
+    assert mem[1]["answer"] == "I play football on weekends"
+    # the second time the agent tried the weekend question it was caught and rewritten
+    assert rewrites and rewrites[0]["fixed"]
+    assert replies.count("Cool! What do you like to do on weekends?") == 1
+
+
+def test_question_similarity_catches_rephrasings_not_new_topics():
+    from attack_agent.engine.conversation import question_similarity as sim
+
+    assert sim("What was the trickiest part of getting the demo ready?",
+               "What was the hardest part of preparing the demo?") >= 0.5
+    assert sim("How did your exam go?", "How do you prepare for exams?") < 0.5
+    assert sim("What do you like doing with your friends?", "What kind of music do you like?") < 0.5

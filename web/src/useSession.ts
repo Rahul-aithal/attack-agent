@@ -28,12 +28,14 @@ export interface SessionState {
   selfReport?: Record<string, number>;
   error?: string;
   plan?: { turn: number; focus: string[]; auto_focus: string[]; note?: string | null; steered: boolean };
+  memory: { turn: number; topic: string | null; question: string; answer: string }[];
+  rewrites: number;
   interventions: { type: string; turn: number; phase: string; at: string; focus?: string[] | null; note?: string | null }[];
 }
 
 const initial: SessionState = {
   phase: "", chat: [], streaming: "", traits: {}, stability: 0, avgConfidence: 0,
-  convergence: [], evidence: [], trace: [], awaitQuestionnaire: false, interventions: [],
+  convergence: [], evidence: [], trace: [], awaitQuestionnaire: false, interventions: [], memory: [], rewrites: 0,
 };
 
 export function detectDevice(): "mobile" | "desktop" {
@@ -57,6 +59,13 @@ export function useSession() {
           break;
         case "agent_token":
           ns.streaming = s.streaming + e.token;
+          break;
+        case "memory":
+          ns.memory = [...s.memory, { turn: e.turn, topic: e.topic, question: e.question, answer: e.answer }];
+          break;
+        case "agent_rewrite":
+          ns.rewrites = s.rewrites + 1;
+          ns.trace = [...s.trace, `repeat caught (turn ${e.turn}): “${e.repeated}” → ${e.fixed ? "rewritten" : "could not rewrite"}`];
           break;
         case "agent_plan":
           ns.plan = { turn: e.turn, focus: e.focus, auto_focus: e.auto_focus, note: e.note, steered: e.steered };

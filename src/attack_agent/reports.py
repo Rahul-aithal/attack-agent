@@ -197,6 +197,19 @@ def session_report_md(session_id: str, settings: Settings | None = None) -> str 
             )
         out.append("")
 
+    # ---- memory
+    if cfg.get("memory"):
+        out.append("## Question & answer memory")
+        out.append("")
+        out.append("| Turn | Topic | Question | Answer |")
+        out.append("|---|---|---|---|")
+        for m in cfg["memory"]:
+            out.append(
+                f"| {m.get('turn')} | {m.get('topic') or '–'} | {_md_escape(m.get('question', ''))} "
+                f"| {_md_escape(m.get('answer', ''))} |"
+            )
+        out.append("")
+
     # ---- interventions
     if cfg.get("interventions"):
         out.append("## Researcher interventions")

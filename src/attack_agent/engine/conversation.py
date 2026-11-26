@@ -74,14 +74,16 @@ Adapt to them:
 - If they ask you something, answer it briefly and naturally first.
 - If they seem uncomfortable or deflect, drop the topic and move on lightly.
 
+{memory}
 Topic for this reply: {focus}
-{angles}{asked}{note}
+{angles}{note}
 Never:
 - mention personality, traits, profiling, analysis, research, tests or this being a study;
 - give advice, therapy-style reflections, or flattery;
 - ask about health or diagnoses, religion, politics, sexuality, money, or painful family matters;
 - ask for identifying details (full name, address, workplace or college name, contacts);
-- repeat or rephrase a question you already asked.
+- repeat or rephrase a question you already asked, or ask about something they already told you
+  (build on it instead).
 
 Write only your next message. No speaker label, no quotes."""
 
@@ -92,6 +94,74 @@ they've been up to, or the best part of their week so far). {length_rule}
 Write only the message. No speaker label, no quotes."""
 
 _QUESTION_RE = re.compile(r"[^.!?\n]*\?")
+_WORD_RE = re.compile(r"[a-z']+")
+# words that carry no topic, ignored when comparing two questions
+_STOP = set(
+    "a an the you your yours do did does what how when where why who which is are was were be "
+    "have has had to of in on at for with about and or but so that this it its any some ever "
+    "like would could can tell me more usually tend kind sort thing things time times there "
+    "they them their i my we our if just really get got go going".split()
+)
+REPEAT_THRESHOLD = 0.5
+
+
+def extract_questions(text: str) -> list[str]:
+    return [q.strip() for q in _QUESTION_RE.findall(text or "") if len(q.strip()) > 8]
+
+
+# common rephrasings mapped to one word, so "hardest part" and "trickiest part" compare equal
+_SYNONYMS = {
+    "trickiest": "hard", "toughest": "hard", "hardest": "hard", "difficult": "hard",
+    "challenging": "hard", "tricky": "hard", "tough": "hard",
+    "spend": "do", "spent": "do", "unwind": "relax", "chill": "relax", "rest": "relax",
+    "celebrate": "relax", "prepare": "ready", "preparing": "ready", "prep": "ready",
+    "deal": "handle", "cope": "handle", "manage": "handle", "stressful": "stress",
+    "stressed": "stress", "pressure": "stress", "favorite": "favourite", "enjoy": "like",
+    "love": "like", "pals": "friend", "mates": "friend", "buddies": "friend",
+}
+
+
+def _stem(word: str) -> str:
+    word = _SYNONYMS.get(word, word)
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(word) > 4 and word.endswith(suffix):
+            word = word[: -len(suffix)]
+            break
+    return _SYNONYMS.get(word, word)
+
+
+def _content_words(text: str) -> set[str]:
+    return {_stem(w) for w in _WORD_RE.findall(text.lower()) if w not in _STOP and len(w) > 2}
+
+
+def question_similarity(a: str, b: str) -> float:
+    """0-1 overlap of the meaningful words of two questions (rephrasings score high)."""
+    from difflib import SequenceMatcher
+
+    # near-identical wording is a repeat however few topic words it has
+    full = SequenceMatcher(None, " ".join(_WORD_RE.findall(a.lower())),
+                           " ".join(_WORD_RE.findall(b.lower()))).ratio()
+    if full >= 0.85:
+        return full
+    wa, wb = _content_words(a), _content_words(b)
+    if len(wa & wb) < 2:
+        return min(0.4, len(wa & wb) / max(1, len(wa | wb)))  # one shared word isn't a repeat
+    jaccard = len(wa & wb) / len(wa | wb) if wa and wb else 0.0
+    seq = SequenceMatcher(None, " ".join(sorted(wa)), " ".join(sorted(wb))).ratio()
+    return max(jaccard, 0.8 * seq)
+
+
+def find_repeat(reply: str, state: AgentState) -> str | None:
+    """The earlier question this reply repeats, if any."""
+    earlier = [m["question"] for m in state.memory] + [
+        q for m in state.conversation_history[:-1] if m["role"] == "assistant"
+        for q in extract_questions(m["content"])
+    ]
+    for new in extract_questions(reply):
+        for old in earlier:
+            if question_similarity(new, old) >= REPEAT_THRESHOLD:
+                return old
+    return None
 
 
 def length_rule(device: str | None) -> str:
@@ -121,12 +191,15 @@ def _engagement_rule(state: AgentState) -> str:
     return "Follow up on what they said if it is interesting; otherwise move to the topic below."
 
 
-def _questions_asked(state: AgentState, limit: int = 12) -> list[str]:
-    asked: list[str] = []
-    for m in state.conversation_history:
-        if m["role"] == "assistant":
-            asked += [q.strip() for q in _QUESTION_RE.findall(m["content"]) if len(q.strip()) > 8]
-    return asked[-limit:]
+def memory_text(state: AgentState, limit: int = 20) -> str:
+    """'What you already know': each question asked so far with the answer given."""
+    if not state.memory:
+        return ""
+    lines = ["What you already asked and what they answered (do NOT ask any of these again):"]
+    for m in state.memory[-limit:]:
+        answer = m["answer"] if len(m["answer"]) <= 160 else m["answer"][:157] + "…"
+        lines.append(f'  - Q: {m["question"]}\n    A: {answer}')
+    return "\n".join(lines) + "\n"
 
 
 class ConversationEngine:
@@ -138,6 +211,7 @@ class ConversationEngine:
         self.llm = llm
         self._topic: str | None = None
         self._topic_turns = 0
+        self._angle: str | None = None
 
     async def generate_opening(self, device: str | None = None) -> str:
         prompt = OPENING_PROMPT.format(length_rule=length_rule(device))
@@ -166,13 +240,25 @@ class ConversationEngine:
         uncertain.sort()  # untouched traits first, then the least confident
         return [uncertain[0][2]]
 
-    def commit_focus(self, focus: list[str]) -> None:
-        """Record the topic actually used for a reply (auto or researcher-steered)."""
+    @property
+    def topic(self) -> str | None:
+        return self._topic
+
+    def commit_focus(self, focus: list[str], state: AgentState | None = None) -> None:
+        """Record the topic actually used for a reply (auto or researcher-steered) and pick one
+        example angle for it that hasn't been suggested before."""
         topic = focus[0] if focus else None
         if topic and topic == self._topic:
             self._topic_turns += 1
         else:
             self._topic, self._topic_turns = topic, 1 if topic else 0
+        self._angle = None
+        if topic and state is not None:
+            used = state.used_angles.setdefault(topic, [])
+            fresh = [i for i in range(len(TRAIT_ANGLES.get(topic, []))) if i not in used]
+            if fresh:
+                used.append(fresh[0])
+                self._angle = TRAIT_ANGLES[topic][fresh[0]]
 
     # ------------------------------------------------------------------ prompting
     def _reply_messages(
@@ -181,21 +267,20 @@ class ConversationEngine:
         focus = self.plan_focus(state) if focus is None else focus
         if focus:
             topic = "; ".join(TRAIT_TOPIC_HINTS[t] for t in focus if t in TRAIT_TOPIC_HINTS)
-            angles = "Possible angles (pick one that fits the conversation; don't copy wording):\n"
-            angles += "".join(f"  - {a}\n" for t in focus for a in TRAIT_ANGLES.get(t, []))
             topic += " (lead into it naturally from what they just said)"
+            angles = (
+                f"Suggested angle (adapt it, don't copy the wording): {self._angle}\n"
+                if self._angle
+                else "Find a fresh angle on this topic that you haven't asked about yet.\n"
+            )
         else:
             topic = "follow what they just said and keep the conversation flowing naturally"
             angles = ""
-        asked = _questions_asked(state)
-        asked_text = (
-            "Questions you already asked:\n" + "".join(f"  - {q}\n" for q in asked) if asked else ""
-        )
         extra = f"Additional guidance for this reply: {note}\n" if note else ""
         system = REPLY_SYSTEM_PROMPT.format(
             focus=topic,
             angles=angles,
-            asked=asked_text,
+            memory=memory_text(state),
             note=extra,
             length_rule=length_rule(state.device),
             engagement_rule=_engagement_rule(state),

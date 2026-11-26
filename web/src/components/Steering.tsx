@@ -36,6 +36,29 @@ export function Transcript({ s }: { s: SessionState }) {
   );
 }
 
+/** The agent's memory: every question it asked with the participant's answer. */
+export function Memory({ s }: { s: SessionState }) {
+  return (
+    <Panel title={`Question & answer memory (${s.memory.length})`}>
+      <div className="text-[11px] text-slate-500 mb-2">
+        Fed back to the agent each turn so it builds on answers instead of asking again.
+        {s.rewrites > 0 && <span className="text-amber-300"> Repeats caught and rewritten: {s.rewrites}.</span>}
+      </div>
+      <div className="max-h-72 overflow-y-auto space-y-2 text-xs pr-1">
+        {s.memory.length === 0 && <div className="text-slate-500">nothing yet</div>}
+        {s.memory.map((m, i) => (
+          <div key={i} className="border-l-2 border-line pl-2">
+            <div className="text-slate-400">
+              <span className="font-mono text-slate-500">#{m.turn}</span>{m.topic && <span className="text-slate-500"> · {m.topic}</span>} Q: {m.question}
+            </div>
+            <div className="text-slate-200">A: {m.answer}</div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 /**
  * Topic coverage + optional researcher steering. Every action is logged with the session
  * (state.interventions) so steered sessions can be flagged or excluded in the analysis.

@@ -25,7 +25,10 @@ JOIN_CODE_LENGTH = 6
 
 # Event types that reveal the live inferred profile; withheld from participant-facing streams so
 # the participant never sees their own profile mid-study (it would bias their behaviour).
-RESEARCHER_ONLY_EVENTS = {"trait_update", "profile", "twin_prediction", "agent_plan", "intervention"}
+RESEARCHER_ONLY_EVENTS = {
+    "trait_update", "profile", "twin_prediction", "agent_plan", "intervention", "memory",
+    "agent_rewrite",
+}
 
 
 @dataclass
@@ -264,6 +267,7 @@ class SessionManager:
                     **self._settings_snapshot(),
                     **(meta.get("config") or {}),
                     "device": engine.state.device,
+                    "memory": engine.state.memory,
                     "twin": (
                         {
                             "source": engine.state.twin_prediction.source,

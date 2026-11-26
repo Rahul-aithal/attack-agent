@@ -45,6 +45,12 @@ class AgentState(BaseModel):
     # "mobile" | "desktop", reported by the participant's browser; message length adapts to it
     # and it is stored with the session (device can affect how people respond).
     device: str | None = None
+    # Conversation memory: every question the agent asked, the participant's answer and the topic
+    # (trait) it was exploring. Fed back to the agent so it builds on answers instead of asking
+    # again; stored with the session and shown in reports.
+    memory: list[dict] = Field(default_factory=list)
+    # which example angles (per trait) have already been suggested, so they are not reused
+    used_angles: dict[str, list[int]] = Field(default_factory=dict)
 
     def init_traits(self) -> None:
         if not self.trait_estimates:
