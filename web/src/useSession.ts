@@ -68,6 +68,9 @@ export function useSession() {
         case "error":
           ns.error = e.message;
           break;
+        case "replaced":
+          ns.error = "replaced";
+          break;
         case "agent_message":
           ns.chat = [...s.chat, { who: "agent", text: e.text }];
           ns.streaming = "";
@@ -117,7 +120,7 @@ export function useSession() {
       return ns;
     });
     // A finished (or unknown) session is closed by the server on purpose: stop reconnecting.
-    if (e.type === "complete" || e.type === "aborted" || (e.type === "error" && e.message === "session not found")) {
+    if (e.type === "complete" || e.type === "aborted" || e.type === "replaced" || (e.type === "error" && e.message === "session not found")) {
       sockRef.current?.close();
     }
   }, []);
@@ -133,7 +136,7 @@ export function useSession() {
         if (!token) sockRef.current?.send({ kind: "client_info", device: detectDevice() });
       },
       onState: setConn,
-    });
+    }, token ? undefined : detectDevice());
   }, [handle]);
 
   // The server echoes the message back as `participant_message`, which adds it to the chat (and

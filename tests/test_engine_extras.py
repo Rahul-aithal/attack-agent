@@ -258,3 +258,66 @@ async def test_researcher_steering_is_applied_once_and_logged(tmp_path):
     assert not plans[1]["steered"]  # one-shot
     assert engine.state.turn_count < 10  # ended early, before max_turns
     assert [i["type"] for i in engine.state.interventions] == ["steer", "finish_profiling"]
+
+
+@pytest.mark.asyncio
+async def test_model_outage_does_not_end_the_session(tmp_path):
+    """Every model call failing must still give the participant an opening and replies."""
+    settings = Settings(min_turns=2, max_turns=2, health_cache_seconds=0, output_dir=tmp_path,
+                        twin_enabled=True, questionnaire_enabled=False)
+    node = FakeProvider("fake", fail=True)
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    engine = SessionEngine(Router({"fake": node}, roles, settings), settings=settings)
+    agent_msgs, phases = [], []
+    async for event in engine.events():
+        if event["type"] == "agent_message":
+            agent_msgs.append(event["text"])
+        elif event["type"] == "phase_change":
+            phases.append(event["phase"])
+        elif event["type"] == "await_message":
+            engine.submit_message("I like planning trips with friends")
+        assert event["type"] != "error"
+    assert agent_msgs and all(m.strip() for m in agent_msgs)
+    assert phases[-1] == "complete"
+    assert engine.state.real_outcome is not None  # keyword fallback judged the reply
+
+
+def test_malformed_questionnaire_is_ignored_not_fatal():
+    result = score_responses({"1": "x", "2": None, "999": 3, "3": 9, "4": 4, 5: "2"})
+    assert result.answered == 2  # only items 4 and 5 are valid
+    assert score_responses(["not", "a", "dict"]).answered == 0  # type: ignore[arg-type]
+
+
+def test_reasoning_blocks_are_removed():
+    from attack_agent.engine.llm.base import ThinkFilter, strip_think
+
+    assert strip_think("<think>\nplan\n</think>\n\nHi there!") == "Hi there!"
+    f = ThinkFilter()
+    out = "".join(f.feed(t) for t in ["<thi", "nk>secret</th", "ink>Hello", " a<b"]) + f.flush()
+    assert out == "Hello a<b"
+
+
+def test_clean_reply_strips_labels_and_quotes():
+    from attack_agent.engine.session_engine import clean_reply
+
+    assert clean_reply('Alex: "How was your weekend?"') == "How was your weekend?"
+    assert clean_reply("**Alex:** Nice!") == "Nice!"
+
+
+def test_topic_planner_stays_then_moves_to_least_covered():
+    from attack_agent.engine.conversation import ConversationEngine
+
+    state = AgentState(session_id="t")
+    state.init_traits()
+    conv = ConversationEngine(llm=None)  # type: ignore[arg-type]
+    state.turn_count = 1
+    assert conv.plan_focus(state) == []  # rapport first
+    state.turn_count = 2
+    first = conv.plan_focus(state)
+    assert len(first) == 1
+    conv.commit_focus(first)
+    assert conv.plan_focus(state) == first  # stays on the topic for a second reply
+    conv.commit_focus(first)
+    nxt = conv.plan_focus(state)
+    assert nxt and nxt != first  # then moves on

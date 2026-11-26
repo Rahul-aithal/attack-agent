@@ -24,6 +24,11 @@ export function Participant() {
   const [draft, setDraft] = useState("");
   const [items, setItems] = useState<QItem[]>([]);
   const [responses, setResponses] = useState<Record<number, number>>({});
+  // keep questionnaire answers across a refresh / reconnect
+  useEffect(() => {
+    if (!sessionId) return;
+    try { setResponses(JSON.parse(localStorage.getItem(`answers:${sessionId}`) || "{}")); } catch { /* ignore */ }
+  }, [sessionId]);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { getQuestionnaire().then(setItems).catch(() => {}); }, []);
@@ -62,7 +67,10 @@ export function Participant() {
   }
 
   function leave() {
-    if (sessionId) localStorage.removeItem(consentKey(sessionId));
+    if (sessionId) {
+      localStorage.removeItem(consentKey(sessionId));
+      localStorage.removeItem(`answers:${sessionId}`);
+    }
     setUrl({ session: null });
     location.reload();
   }
@@ -99,6 +107,9 @@ export function Participant() {
   const done = state.phase === "complete" || !!state.debrief;
   const aborted = state.phase === "aborted";
   const lost = state.error === "session not found";
+  const replaced = state.error === "replaced";
+  // anything else is the server reporting that the session itself failed
+  const failed = !!state.error && !lost && !replaced;
   const offline = conn !== "open";
   // The agent is working (reading signals / generating) until it asks for the next message.
   const thinking = !state.awaiting && !done && !inQuestionnaire && !aborted;
@@ -106,6 +117,7 @@ export function Participant() {
   function answer(id: number, v: number) {
     const next = { ...responses, [id]: v };
     setResponses(next);
+    if (sessionId) localStorage.setItem(`answers:${sessionId}`, JSON.stringify(next));
     sendProgress(Object.keys(next).length); // live "n/50" on the researcher dashboard
   }
 
@@ -122,12 +134,25 @@ export function Participant() {
         )}
       </div>
 
-      <NewMessageToast show={state.chat.some((m) => m.who === "scenario")} />
+      <NewMessageToast show={state.chat.some((m) => m.who === "scenario")} onceKey={sessionId ? `toast:${sessionId}` : undefined} />
 
       {conn === "reconnecting" && !done && !aborted && (
         <div className="rounded-lg border border-amber-600 bg-amber-950/40 px-3 py-2 text-sm text-amber-200">
           Connection lost — reconnecting… your chat is kept, just wait a moment.
         </div>
+      )}
+
+      {replaced && (
+        <Panel title="Opened somewhere else">
+          <p className="text-sm text-slate-300">This chat was opened in another tab or device, so it continues there. You can close this page.</p>
+        </Panel>
+      )}
+
+      {failed && !done && !aborted && (
+        <Panel title="Something went wrong">
+          <p className="text-sm text-slate-300">Sorry — the study system ran into a problem and this session had to stop. Please let the researcher know.</p>
+          <div className="mt-3"><Button variant="ghost" onClick={leave}>Back to start</Button></div>
+        </Panel>
       )}
 
       {lost && (
@@ -144,7 +169,7 @@ export function Participant() {
         </Panel>
       )}
 
-      {!inQuestionnaire && !done && !aborted && !lost && (
+      {!inQuestionnaire && !done && !aborted && !lost && !replaced && !failed && (
         <Panel className="!p-2 sm:!p-4 flex flex-col h-[calc(100dvh-8.5rem)] sm:h-[70vh] min-h-[20rem]">
           <div className="flex-1 overflow-y-auto space-y-3 px-1 overscroll-contain">
             {state.chat.map((m, i) => (
@@ -161,14 +186,14 @@ export function Participant() {
               if (draft.trim() && !thinking && sendMessage(draft.trim())) setDraft("");
             }}
           >
-            <Input value={draft} onChange={(e) => setDraft(e.target.value)} enterKeyHint="send" autoComplete="off"
+            <Input value={draft} onChange={(e) => setDraft(e.target.value)} enterKeyHint="send" autoComplete="off" maxLength={2000}
               placeholder={offline ? "Reconnecting…" : thinking ? "Waiting for reply…" : "Type your reply…"} />
             <Button type="submit" disabled={thinking || offline || !draft.trim()}>Send</Button>
           </form>
         </Panel>
       )}
 
-      {inQuestionnaire && (
+      {inQuestionnaire && !replaced && (
         <Panel className="!p-3 sm:!p-4">
           <div className="sticky top-14 z-[5] -mx-3 sm:-mx-4 -mt-3 sm:-mt-4 mb-3 px-3 sm:px-4 pt-3 pb-2 bg-panel border-b border-line rounded-t-xl">
             <div className="flex items-baseline justify-between">
@@ -212,6 +237,7 @@ export function Participant() {
       {done && (
         <Panel title="Thank you">
           <p className="text-sm text-slate-300">{state.debrief}</p>
+          <div className="mt-4"><Button variant="ghost" onClick={leave}>Finish (ready for the next participant)</Button></div>
         </Panel>
       )}
     </div>
@@ -262,10 +288,14 @@ function Bubble({ who, text, showHeader }: { who: string; text: string; showHead
 }
 
 /** Small "new message" notice, like a chat app shows when a different contact writes. */
-function NewMessageToast({ show }: { show: boolean }) {
+function NewMessageToast({ show, onceKey }: { show: boolean; onceKey?: string }) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (!show) return;
+    if (onceKey) {
+      if (sessionStorage.getItem(onceKey)) return; // already shown (reconnect replays history)
+      sessionStorage.setItem(onceKey, "1");
+    }
     setVisible(true);
     const t = setTimeout(() => setVisible(false), 4000);
     return () => clearTimeout(t);

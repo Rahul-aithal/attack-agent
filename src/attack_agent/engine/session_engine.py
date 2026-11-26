@@ -16,6 +16,7 @@ Event types emitted (each a dict with a ``type`` key):
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -36,6 +37,11 @@ from attack_agent.schemas import ALL_TRAITS, Outcome, Phase, TurnLog
 from attack_agent.state import AgentState
 
 DONE = object()  # sentinel pushed to every subscriber when the session finishes
+MAX_MESSAGE_CHARS = 2000
+
+# Used when every model route fails for a turn, so one bad call never ends the session.
+FALLBACK_OPENING = "Hi, I'm Alex! Thanks for chatting with me. How has your day been so far?"
+FALLBACK_REPLY = "Sorry, I lost my train of thought for a second. Could you tell me a bit more about that?"
 
 
 class SessionEngine:
@@ -76,14 +82,17 @@ class SessionEngine:
         if self._task is None:
             self._task = asyncio.create_task(self._run_guarded())
 
-    async def events(self) -> AsyncIterator[dict]:
+    async def events(self, start: bool = True) -> AsyncIterator[dict]:
         """Yield every event (history first, then live) until the session completes. Any number
-        of consumers may iterate concurrently; each sees the full stream."""
+        of consumers may iterate concurrently; each sees the full stream. Observers (dashboard,
+        persistence watcher) pass start=False so a session only begins when its participant
+        connects."""
         queue: asyncio.Queue[Any] = asyncio.Queue()
         for item in self._history:
             queue.put_nowait(item)
         self._subscribers.append(queue)
-        self.start()
+        if start:
+            self.start()
         try:
             while True:
                 item = await queue.get()
@@ -95,11 +104,15 @@ class SessionEngine:
                 self._subscribers.remove(queue)
 
     @property
+    def started(self) -> bool:
+        return self._task is not None
+
+    @property
     def finished(self) -> bool:
         return bool(self._history) and self._history[-1] is DONE
 
     def submit_message(self, text: str) -> None:
-        self._input.put_nowait({"kind": "message", "text": text})
+        self._input.put_nowait({"kind": "message", "text": str(text)[:MAX_MESSAGE_CHARS]})
 
     def submit_questionnaire(self, responses: dict[int, int]) -> None:
         self._input.put_nowait({"kind": "questionnaire", "responses": responses})
@@ -199,7 +212,14 @@ class SessionEngine:
 
         # ---- PROFILING ----
         await self._set_phase(Phase.PROFILING)
-        opening = await self.loop.conversation.generate_opening()
+        try:
+            opening = clean_reply(
+                await self.loop.conversation.generate_opening(self.state.device)
+            )
+        except Exception as exc:
+            logger.warning("opening generation failed, using fallback: {}", exc)
+            opening = ""
+        opening = opening or FALLBACK_OPENING
         await self._emit("agent_message", text=opening)
         self.state.conversation_history.append({"role": "assistant", "content": opening})
         self.loop.log_agent_turn(self.state, opening, "start_conversation")
@@ -387,11 +407,14 @@ class SessionEngine:
 
             await self._emit("await_message", context="scenario")
             msg = await self._next_input()
+            # only a non-empty chat message counts as the reply to this exchange
+            while not self._is_abort(msg) and not (
+                msg["kind"] == "message" and msg["text"].strip()
+            ):
+                msg = await self._next_input()
             if self._is_abort(msg):
                 state.real_outcome = Outcome.INCOMPLETE
                 return
-            if msg["kind"] != "message":
-                continue
             response = msg["text"].strip()
             await self._emit("participant_message", text=response)
             state.turn_count += 1
@@ -424,12 +447,13 @@ class SessionEngine:
             items=questionnaire_items(),
             scale={str(i): lbl for i, lbl in _likert().items()},
         )
+        # wait for the actual submission; stray chat messages are not a (blank) questionnaire
         msg = await self._next_input()
+        while not self._is_abort(msg) and msg["kind"] != "questionnaire":
+            msg = await self._next_input()
         if self._is_abort(msg):
             return
-        responses = {}
-        if msg["kind"] == "questionnaire":
-            responses = msg.get("responses", {})
+        responses = msg.get("responses", {})
         result = score_responses(responses)
         self.state.questionnaire = result.to_dict()
         self.state.self_report_scores = result.scores_0_1
@@ -467,6 +491,7 @@ class SessionEngine:
         auto_focus = conv.plan_focus(state)
         focus = (steer or {}).get("focus") or auto_focus
         note = (steer or {}).get("note")
+        conv.commit_focus(focus)
         await self._emit(
             "agent_plan",
             turn=state.turn_count,
@@ -481,9 +506,19 @@ class SessionEngine:
                 parts.append(token)
                 await self._emit("agent_token", token=token)
         except Exception as exc:
-            logger.debug("stream unavailable, falling back to full reply: {}", exc)
-            parts = []
-        text = "".join(parts) if parts else await conv.generate_reply(state, focus, note)
+            # a stream that already showed text is kept; otherwise try a plain call below
+            logger.warning("streamed reply failed after {} tokens: {}", len(parts), exc)
+        text = clean_reply("".join(parts))
+        if not text:
+            try:
+                text = clean_reply(await conv.generate_reply(state, focus, note))
+            except Exception as exc:
+                logger.warning("reply generation failed on every route: {}", exc)
+        if not text:
+            text = FALLBACK_REPLY
+        if not any(_EMOJI.search(m["content"]) for m in state.conversation_history if m["role"] == "user"):
+            # mirror the participant: no emojis unless they use them
+            text = re.sub(r"[ \t]{2,}", " ", _EMOJI.sub("", text)).strip() or text
         await self._emit("agent_message", text=text)
         return text
 
@@ -505,6 +540,20 @@ class SessionEngine:
             self.state.real_outcome = Outcome.INCOMPLETE
         await self._set_phase(Phase.ABORTED)
         await self._emit("aborted")
+
+
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F02F\uFE0F]")
+
+
+def clean_reply(text: str) -> str:
+    """Tidy a model reply for the chat: drop a speaker label ("Alex:") and wrapping quotes."""
+    text = (text or "").strip()
+    text = re.sub(r"^\s*\**\s*(alex|assistant|agent)\s*(:\**|\**\s*:)\s*", "", text, flags=re.I)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'“”":
+        text = text[1:-1].strip()
+    if text.startswith("“") and text.endswith("”"):
+        text = text[1:-1].strip()
+    return text
 
 
 def _new_session_id() -> str:

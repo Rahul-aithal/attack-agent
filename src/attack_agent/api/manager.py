@@ -51,6 +51,7 @@ class SessionManager:
         self._admin_feeds: set[asyncio.Queue[dict]] = set()
         self._join_codes: dict[str, str] = {}  # code -> session id
         self._participant_sockets: dict[str, int] = {}
+        self._participant_ws: dict[str, Any] = {}  # the one socket allowed to drive a session
         self._pending_aborts: dict[str, asyncio.Task] = {}
         self._questionnaire_progress: dict[str, int] = {}
         # Live monitoring for the dashboard: machine telemetry pushed by scripts/node_monitor.py,
@@ -167,6 +168,21 @@ class SessionManager:
         return self._join_codes.get(code.strip().upper().replace(" ", "").replace("-", ""))
 
     # ------------------------------------------------------------------ participant presence
+    def claim_participant_socket(self, session_id: str, ws: Any) -> Any | None:
+        """Only one participant connection may drive a session. The newest one wins (a rejoin
+        after a dropped connection often arrives before the old socket is noticed as dead);
+        the previous socket is returned so the caller can tell it and close it."""
+        previous = self._participant_ws.get(session_id)
+        self._participant_ws[session_id] = ws
+        return previous if previous is not ws else None
+
+    def owns_session(self, session_id: str, ws: Any) -> bool:
+        return self._participant_ws.get(session_id) is ws
+
+    def release_participant_socket(self, session_id: str, ws: Any) -> None:
+        if self._participant_ws.get(session_id) is ws:
+            self._participant_ws.pop(session_id, None)
+
     def participant_connected(self, session_id: str) -> None:
         self._participant_sockets[session_id] = self._participant_sockets.get(session_id, 0) + 1
         pending = self._pending_aborts.pop(session_id, None)
@@ -219,7 +235,7 @@ class SessionManager:
             await asyncio.shield(task)
 
     async def _persist_when_done(self, session_id: str, engine: SessionEngine) -> None:
-        async for event in engine.events():
+        async for event in engine.events(start=False):
             # phase and turn count are what the researcher's session list shows
             if event.get("type") in ("phase_change", "profile"):
                 self._broadcast_sessions()
@@ -304,7 +320,7 @@ class SessionManager:
                     "session_id": sid,
                     "join_code": self.join_code(sid),
                     "participant_connected": bool(self._participant_sockets.get(sid)),
-                    "phase": state.phase.value,
+                    "phase": state.phase.value if engine.started else "waiting",
                     "turn_count": state.turn_count,
                     "participant_messages": participant_msgs,
                     "agent_messages": agent_msgs,

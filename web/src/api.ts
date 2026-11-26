@@ -136,8 +136,8 @@ class ReconnectingSocket {
 }
 
 export class SessionSocket extends ReconnectingSocket {
-  constructor(sessionId: string, token: string | null, h: Handlers) {
-    const q = token ? `?admin_token=${encodeURIComponent(token)}` : "";
+  constructor(sessionId: string, token: string | null, h: Handlers, device?: string) {
+    const q = token ? `?admin_token=${encodeURIComponent(token)}` : device ? `?device=${device}` : "";
     super(`/sessions/${sessionId}/stream${q}`, h);
   }
   message(text: string) { return this.send({ kind: "message", text }); }

@@ -26,7 +26,7 @@ class FakeProvider(Provider):
         if self.fail:
             raise RuntimeError("fake failure")
         prompt = " ".join(m["content"] for m in messages).lower()
-        if "write a short, warm opening" in prompt:
+        if "short opening message" in prompt:
             return "Hey! How's your day going so far?"
         if "classify the reply" in prompt or "respond with only this json" in prompt and "outcome" in prompt:
             return json.dumps({"outcome": "PARTIAL", "confidence": 0.6, "reasoning": "hesitant"})

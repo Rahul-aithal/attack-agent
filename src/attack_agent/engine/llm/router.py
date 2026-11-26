@@ -24,7 +24,14 @@ import yaml
 from loguru import logger
 
 from attack_agent.config import Settings, get_settings
-from attack_agent.engine.llm.base import LLMError, Message, Provider, extract_json
+from attack_agent.engine.llm.base import (
+    LLMError,
+    Message,
+    Provider,
+    ThinkFilter,
+    extract_json,
+    strip_think,
+)
 from attack_agent.engine.llm.providers import make_provider
 
 ROLES = ("agent", "extractor", "twin", "judge", "sim_participant")
@@ -259,7 +266,9 @@ class Router:
             provider = self.nodes[route.node]
             start, call_id = self._begin(role, route, "text")
             try:
-                text = await provider.chat_text(route.model, messages, temp)
+                text = strip_think(await provider.chat_text(route.model, messages, temp))
+                if not text.strip():
+                    raise LLMError("model returned only reasoning / empty text")
                 self._record(role, route, "text", start, True, None, None, call_id)
                 return text
             except Exception as exc:
@@ -327,10 +336,19 @@ class Router:
             provider = self.nodes[route.node]
             start, call_id = self._begin(role, route, "stream")
             produced = False
+            think = ThinkFilter()
             try:
-                async for token in provider.stream(route.model, messages, temp):
+                async for raw in provider.stream(route.model, messages, temp):
+                    token = think.feed(raw)
+                    if token:
+                        produced = True
+                        yield token
+                tail = think.flush()
+                if tail:
                     produced = True
-                    yield token
+                    yield tail
+                if not produced:
+                    raise LLMError("stream produced no visible text")
                 self._record(role, route, "stream", start, True, None, None, call_id)
                 return
             except Exception as exc:

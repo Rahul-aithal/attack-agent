@@ -35,7 +35,16 @@ def _score_item(item: IPIPItem, raw: int) -> float:
 
 def score_responses(responses: dict[int, int]) -> QuestionnaireResult:
     """`responses` maps IPIP item id -> 1-5. Missing items are ignored (trait mean over answered)."""
-    responses = {int(k): int(v) for k, v in responses.items() if v is not None}
+    valid_ids = {item.id for item in IPIP50}
+    clean: dict[int, int] = {}
+    for k, v in (responses.items() if isinstance(responses, dict) else []):
+        try:
+            item_id, value = int(k), int(v)
+        except (TypeError, ValueError):
+            continue  # malformed entry from a client: ignore rather than crash the session
+        if item_id in valid_ids and LIKERT_MIN <= value <= LIKERT_MAX:
+            clean[item_id] = value
+    responses = clean
     per_trait: dict[str, list[float]] = {t: [] for t in ALL_TRAITS}
     for item in IPIP50:
         if item.id in responses:

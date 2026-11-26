@@ -279,6 +279,10 @@ def create_app() -> FastAPI:
             # `participant_grace_seconds` to rejoin (hotspot blip, laptop sleep, page refresh).
             while True:
                 data = await websocket.receive_json()
+                if not isinstance(data, dict):
+                    continue
+                if is_participant and not mgr.owns_session(session_id, websocket):
+                    continue  # replaced by a newer connection for this session
                 kind = data.get("kind") or data.get("type")
                 if kind == "message":
                     engine.submit_message(str(data.get("text", "")))
@@ -295,15 +299,27 @@ def create_app() -> FastAPI:
                 elif kind == "questionnaire_progress" and is_participant:
                     mgr.set_questionnaire_progress(session_id, data.get("answered", 0))
 
+        if is_participant:
+            # device comes with the connection so the very first message already fits the screen
+            engine.set_device(websocket.query_params.get("device", ""))
+
         async def pump_events():
-            # A (re)joining client first receives the whole history, then live events.
-            async for event in engine.events():
+            # A (re)joining client first receives the whole history, then live events. Only the
+            # participant's connection starts the session; the dashboard just watches.
+            async for event in engine.events(start=is_participant):
                 shaped = mgr.filter_event(event, include_profile)
                 if shaped is not None:
                     await websocket.send_json(shaped)
             await mgr.wait_persisted(session_id)
 
         if is_participant:
+            previous = mgr.claim_participant_socket(session_id, websocket)
+            if previous is not None:
+                try:
+                    await previous.send_json({"type": "replaced"})
+                    await previous.close()
+                except Exception:
+                    pass
             mgr.participant_connected(session_id)
         input_task = asyncio.create_task(pump_input())
         events_task = asyncio.create_task(pump_events())
@@ -318,6 +334,7 @@ def create_app() -> FastAPI:
             input_task.cancel()
             events_task.cancel()
             if is_participant:
+                mgr.release_participant_socket(session_id, websocket)
                 mgr.participant_disconnected(session_id)
             try:
                 await websocket.close()

@@ -261,7 +261,9 @@ export function Researcher() {
         {(joinCode ?? watched?.join_code) && !watched?.participant_connected && (watched?.turn_count ?? 0) === 0 && (
           <JoinCard code={(joinCode ?? watched?.join_code)!} />
         )}
-        <ActivityBar s={state} />
+        {watched?.phase === "waiting"
+          ? <div className="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-400">waiting for the participant to join — the session starts when they connect</div>
+          : <ActivityBar s={state} />}
         {watched && (
           <div className="grid grid-cols-3 gap-2 text-center">
             <Stat label="participant replies" value={`${watched.participant_messages}`} sub={`profiling ends by ${watched.max_turns}`} />

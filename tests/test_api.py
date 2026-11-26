@@ -55,7 +55,7 @@ def test_full_session_over_websocket(client):
     sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
 
     phases = []
-    with c.websocket_connect(f"/sessions/{sid}/stream?admin_token=tok") as ws:
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:  # the participant drives it
         try:
             while True:
                 event = ws.receive_json()
@@ -187,15 +187,19 @@ def test_telemetry_and_model_activity_reach_the_admin_feed(client):
 
         sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
         saw_active = saw_done = False
-        for _ in range(100):
-            msg = feed.receive_json()
-            if msg["type"] == "llm":
-                saw_active |= any(a["session_id"] == sid for a in msg["active"])
-                saw_done |= any(r["session_id"] == sid and r["latency_ms"] >= 0
-                                for r in msg["recent"])
-            if saw_active and saw_done:
-                break
+        # the session (and its first model call) starts when the participant connects
+        with c.websocket_connect(f"/sessions/{sid}/stream?device=mobile") as ws:
+            _until(ws, "await_message")
+            for _ in range(100):
+                msg = feed.receive_json()
+                if msg["type"] == "llm":
+                    saw_active |= any(a["session_id"] == sid for a in msg["active"])
+                    saw_done |= any(r["session_id"] == sid and r["latency_ms"] >= 0
+                                    for r in msg["recent"])
+                if saw_active and saw_done:
+                    break
         assert saw_active and saw_done  # opening message: call started, then finished
+        assert c.app.state.manager.get(sid).state.device == "mobile"
 
 
 def test_session_list_counts_answers(client):
@@ -253,3 +257,24 @@ def test_reports_markdown_by_default_pdf_on_request(client):
     assert pdf.status_code == 200
     assert pdf.content[:4] == b"%PDF"
     assert c.get(f"/sessions/{sid}/report").status_code == 401
+
+
+def test_newer_participant_connection_replaces_older(client):
+    c, _ = client
+    sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
+    with c.websocket_connect(f"/sessions/{sid}/stream") as first:
+        _until(first, "await_message")
+        with c.websocket_connect(f"/sessions/{sid}/stream") as second:
+            _until(first, "replaced")
+            _until(second, "await_message")  # history replayed to the new device
+            second.send_json({"kind": "message", "text": "hello from my phone"})
+            _until(second, "participant_message")
+
+
+def test_dashboard_does_not_start_a_session(client):
+    c, _ = client
+    sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
+    with c.websocket_connect(f"/sessions/{sid}/stream?admin_token=tok"):
+        pass
+    row = next(r for r in c.app.state.manager.list_sessions() if r["session_id"] == sid)
+    assert row["phase"] == "waiting"

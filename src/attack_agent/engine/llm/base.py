@@ -17,10 +17,59 @@ class LLMError(Exception):
     """Raised when a provider call fails or returns nothing usable."""
 
 
+_THINK_BLOCK = re.compile(r"<think>.*?(</think>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think(text: str) -> str:
+    """Remove reasoning blocks (<think>…</think>) that reasoning models such as qwen3 or
+    deepseek-r1 emit when the server ignores `think: false` (older Ollama versions)."""
+    return _THINK_BLOCK.sub("", text or "").strip() if "<think" in (text or "").lower() else (text or "")
+
+
+class ThinkFilter:
+    """Streaming counterpart of strip_think: drops tokens inside <think>…</think>."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._inside = False
+
+    def feed(self, token: str) -> str:
+        self._buf += token
+        out = ""
+        while self._buf:
+            if self._inside:
+                end = self._buf.lower().find("</think>")
+                if end < 0:
+                    self._buf = self._buf[-8:]  # keep a tail in case the tag is split
+                    return out
+                self._buf = self._buf[end + len("</think>"):].lstrip()
+                self._inside = False
+            else:
+                start = self._buf.lower().find("<think>")
+                if start < 0:
+                    # hold back a possible partial "<think" at the end
+                    cut = self._buf.rfind("<")
+                    if cut >= 0 and "<think>".startswith(self._buf[cut:].lower()):
+                        out, self._buf = out + self._buf[:cut], self._buf[cut:]
+                    else:
+                        out, self._buf = out + self._buf, ""
+                    return out
+                out += self._buf[:start]
+                self._buf = self._buf[start + len("<think>"):]
+                self._inside = True
+        return out
+
+    def flush(self) -> str:
+        rest = "" if self._inside else self._buf
+        self._buf = ""
+        return rest
+
+
 def extract_json(text: str) -> dict | None:
     """Pull the first JSON object out of a model reply (tolerates prose and code fences)."""
     if not text:
         return None
+    text = strip_think(text)
     text = re.sub(r"```(?:json)?", "", text)
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:

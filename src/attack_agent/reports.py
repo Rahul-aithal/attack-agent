@@ -46,12 +46,17 @@ def _pct(n: int, d: int) -> str:
     return "–" if not d else f"{100 * n / d:.0f}% ({n}/{d})"
 
 
+def _safe(text: str) -> str:
+    """Participant/model text must not become HTML in the PDF renderer."""
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _md_escape(text: str) -> str:
-    return (text or "").replace("|", "\\|").replace("\n", " ")
+    return _safe(text).replace("|", "\\|").replace("\n", " ")
 
 
 def _quote(text: str) -> str:
-    return "\n".join(f"> {line}" if line.strip() else ">" for line in (text or "").splitlines())
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in _safe(text).splitlines())
 
 
 def _dt(value) -> datetime | None:
@@ -254,7 +259,9 @@ def study_report_md(settings: Settings | None = None, include_synthetic: bool = 
         return bool(p and p.is_synthetic)
 
     pool = [s for s in sessions if include_synthetic or not synthetic(s)]
-    done = [s for s in pool if s.real_outcome and not s.aborted]
+    # A session counts once the scenario was answered, even if the participant left during the
+    # questionnaire afterwards (aborted then only means "no self-report").
+    done = [s for s in pool if s.real_outcome and s.real_outcome != "INCOMPLETE"]
     steered = [s for s in pool if (s.config_snapshot or {}).get("researcher_steered")]
     unsteered_done = [s for s in done if s not in steered]
 
@@ -274,7 +281,8 @@ def study_report_md(settings: Settings | None = None, include_synthetic: bool = 
         f"| Sessions{' (incl. synthetic)' if include_synthetic else ' (real participants)'} "
         f"| {len(pool)} |",
         f"| Completed with an outcome | {len(done)} |",
-        f"| Aborted | {sum(1 for s in pool if s.aborted)} |",
+        f"| Left before the scenario was answered | "
+        f"{sum(1 for s in pool if s.real_outcome in (None, 'INCOMPLETE'))} |",
         f"| Steered by researcher | {len(steered)} |",
         f"| Questionnaire complete | "
         f"{sum(1 for s in pool if (q := questionnaires.get(s.id)) and q.complete)} |",
