@@ -16,6 +16,10 @@ from attack_agent.engine.llm import LLMCallRecord, Route, Router
 from attack_agent.engine.session_engine import SessionEngine
 from attack_agent.storage import ensure_participant, persist_session
 
+# Join codes avoid look-alike characters (0/O, 1/I/L) so they can be read out loud.
+JOIN_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+JOIN_CODE_LENGTH = 6
+
 # Event types that reveal the live inferred profile; withheld from participant-facing streams so
 # the participant never sees their own profile mid-study (it would bias their behaviour).
 RESEARCHER_ONLY_EVENTS = {"trait_update", "profile", "twin_prediction"}
@@ -40,6 +44,11 @@ class SessionManager:
         self.experiments: dict[str, Experiment] = {}
         self._persisted: set[str] = set()
         self._watchers: dict[str, asyncio.Task] = {}
+        # Researcher dashboard feeds (one queue per open /admin/stream socket).
+        self._admin_feeds: set[asyncio.Queue[dict]] = set()
+        self._join_codes: dict[str, str] = {}  # code -> session id
+        self._participant_sockets: dict[str, int] = {}
+        self._pending_aborts: dict[str, asyncio.Task] = {}
         self.router.on_call(self._record_call)
 
     # ------------------------------------------------------------------ calls
@@ -62,7 +71,10 @@ class SessionManager:
             except Exception as exc:  # storage is best-effort for a live session
                 logger.warning("ensure_participant failed: {}", exc)
         self.sessions[sid] = engine
+        code = self._new_join_code()
+        self._join_codes[code] = sid
         self._meta[sid] = {
+            "join_code": code,
             "participant_id": participant_id,
             "experiment_id": experiment_id,
             "config": config or {},
@@ -72,7 +84,65 @@ class SessionManager:
         # Save the session when it ends, independent of who is connected. The sockets used to
         # do this, so a participant closing the tab (abort) meant the session was never stored.
         self._watchers[sid] = asyncio.create_task(self._persist_when_done(sid, engine))
+        self._broadcast_sessions()
         return engine
+
+    def _new_join_code(self) -> str:
+        while True:
+            code = "".join(secrets.choice(JOIN_ALPHABET) for _ in range(JOIN_CODE_LENGTH))
+            if code not in self._join_codes:
+                return code
+
+    def join_code(self, session_id: str) -> str | None:
+        return self._meta.get(session_id, {}).get("join_code")
+
+    def resolve_join_code(self, code: str) -> str | None:
+        return self._join_codes.get(code.strip().upper().replace(" ", "").replace("-", ""))
+
+    # ------------------------------------------------------------------ participant presence
+    def participant_connected(self, session_id: str) -> None:
+        self._participant_sockets[session_id] = self._participant_sockets.get(session_id, 0) + 1
+        pending = self._pending_aborts.pop(session_id, None)
+        if pending is not None:
+            pending.cancel()
+            logger.info("participant rejoined {}", session_id)
+        self._broadcast_sessions()
+
+    def participant_disconnected(self, session_id: str) -> None:
+        count = max(0, self._participant_sockets.get(session_id, 1) - 1)
+        self._participant_sockets[session_id] = count
+        self._broadcast_sessions()
+        engine = self.sessions.get(session_id)
+        if count or engine is None or engine.finished or session_id in self._pending_aborts:
+            return
+        self._pending_aborts[session_id] = asyncio.create_task(
+            self._abort_after_grace(session_id, engine)
+        )
+
+    async def _abort_after_grace(self, session_id: str, engine: SessionEngine) -> None:
+        grace = self.settings.participant_grace_seconds
+        logger.info("participant left {}; aborting in {:.0f}s unless they rejoin", session_id, grace)
+        await asyncio.sleep(grace)
+        self._pending_aborts.pop(session_id, None)
+        if not self._participant_sockets.get(session_id) and not engine.finished:
+            logger.info("participant did not return; aborting {}", session_id)
+            engine.abort()
+
+    # ------------------------------------------------------------------ researcher feed
+    def admin_subscribe(self) -> asyncio.Queue[dict]:
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+        self._admin_feeds.add(queue)
+        return queue
+
+    def admin_unsubscribe(self, queue: asyncio.Queue[dict]) -> None:
+        self._admin_feeds.discard(queue)
+
+    def _broadcast_sessions(self) -> None:
+        if not self._admin_feeds:
+            return
+        message = {"type": "sessions", "sessions": self.list_sessions()}
+        for queue in list(self._admin_feeds):
+            queue.put_nowait(message)
 
     async def wait_persisted(self, session_id: str) -> None:
         """Block until the finished session has been written (so an export right after works)."""
@@ -81,8 +151,11 @@ class SessionManager:
             await asyncio.shield(task)
 
     async def _persist_when_done(self, session_id: str, engine: SessionEngine) -> None:
-        async for _ in engine.events():
-            pass
+        async for event in engine.events():
+            # phase and turn count are what the researcher's session list shows
+            if event.get("type") in ("phase_change", "profile"):
+                self._broadcast_sessions()
+        self._broadcast_sessions()  # now marked finished
         await self.persist(session_id)
 
     def get(self, session_id: str) -> SessionEngine | None:
@@ -152,6 +225,8 @@ class SessionManager:
             rows.append(
                 {
                     "session_id": sid,
+                    "join_code": self.join_code(sid),
+                    "participant_connected": bool(self._participant_sockets.get(sid)),
                     "phase": state.phase.value,
                     "turn_count": state.turn_count,
                     "finished": engine.finished,
@@ -182,6 +257,6 @@ class SessionManager:
         self.router.add_node(name, kind, url, api_key)
 
     async def aclose(self) -> None:
-        for task in self._watchers.values():
+        for task in [*self._watchers.values(), *self._pending_aborts.values()]:
             task.cancel()
         await self.router.aclose()

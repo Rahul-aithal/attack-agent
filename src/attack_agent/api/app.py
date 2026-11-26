@@ -58,6 +58,9 @@ class ExperimentRequest(BaseModel):
     config: dict | None = None
 
 
+NODE_POLL_SECONDS = 5.0  # how often the dashboard feed re-checks node health
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -113,7 +116,20 @@ def create_app() -> FastAPI:
         engine = app.state.manager.create_session(
             req.participant_id, req.experiment_id, req.config
         )
-        return {"session_id": engine.session_id}
+        return {
+            "session_id": engine.session_id,
+            "join_code": app.state.manager.join_code(engine.session_id),
+        }
+
+    @app.get("/join/{code}")
+    async def join(code: str):
+        """Resolve a participant join code (given out by the researcher) to its session."""
+        mgr: SessionManager = app.state.manager
+        sid = mgr.resolve_join_code(code)
+        engine = mgr.get(sid) if sid else None
+        if engine is None:
+            raise HTTPException(status_code=404, detail="no session with that code")
+        return {"session_id": sid, "join_code": mgr.join_code(sid), "finished": engine.finished}
 
     @app.get("/sessions", dependencies=[Depends(require_admin)])
     async def list_sessions():
@@ -212,41 +228,95 @@ def create_app() -> FastAPI:
             return
         token = websocket.query_params.get("admin_token")
         include_profile = is_admin_token(token)
+        is_participant = not include_profile
 
         async def pump_input():
-            try:
-                while True:
-                    data = await websocket.receive_json()
-                    kind = data.get("kind") or data.get("type")
-                    if kind == "message":
-                        engine.submit_message(str(data.get("text", "")))
-                    elif kind == "questionnaire":
-                        engine.submit_questionnaire(data.get("responses", {}))
-                    elif kind == "abort":
-                        engine.abort()
-            except WebSocketDisconnect:
-                # Only the participant leaving ends the session; a researcher closing the
-                # dashboard must not abort it.
-                if not include_profile:
+            # Ends when the client disconnects. Leaving is not an abort: a participant gets
+            # `participant_grace_seconds` to rejoin (hotspot blip, laptop sleep, page refresh).
+            while True:
+                data = await websocket.receive_json()
+                kind = data.get("kind") or data.get("type")
+                if kind == "message":
+                    engine.submit_message(str(data.get("text", "")))
+                elif kind == "questionnaire":
+                    engine.submit_questionnaire(data.get("responses", {}))
+                elif kind == "abort":  # explicit "Quit"
                     engine.abort()
-            except Exception as exc:  # pragma: no cover
-                logger.debug("ws input pump ended: {}", exc)
 
-        input_task = asyncio.create_task(pump_input())
-        try:
+        async def pump_events():
+            # A (re)joining client first receives the whole history, then live events.
             async for event in engine.events():
                 shaped = mgr.filter_event(event, include_profile)
                 if shaped is not None:
                     await websocket.send_json(shaped)
             await mgr.wait_persisted(session_id)
-        except WebSocketDisconnect:
-            pass
+
+        if is_participant:
+            mgr.participant_connected(session_id)
+        input_task = asyncio.create_task(pump_input())
+        events_task = asyncio.create_task(pump_events())
+        try:
+            done, _ = await asyncio.wait(
+                {input_task, events_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:  # a disconnect surfaces here as an exception; that's expected
+                if not task.cancelled() and task.exception() is not None:
+                    logger.debug("session socket closed: {!r}", task.exception())
         finally:
             input_task.cancel()
+            events_task.cancel()
+            if is_participant:
+                mgr.participant_disconnected(session_id)
             try:
                 await websocket.close()
             except Exception:
                 pass
+
+    @app.websocket("/admin/stream")
+    async def admin_stream(websocket: WebSocket):
+        """Researcher dashboard feed: pushes the live session list whenever a session is created
+        or changes phase/turn, and node health whenever it changes (checked every few seconds)."""
+        await websocket.accept()
+        if not is_admin_token(websocket.query_params.get("admin_token")):
+            await websocket.send_json({"type": "error", "message": "admin token required"})
+            await websocket.close()
+            return
+        mgr: SessionManager = app.state.manager
+        queue = mgr.admin_subscribe()
+
+        async def pump_nodes():
+            last = None
+            while True:
+                nodes = await mgr.nodes_status()
+                if nodes != last:
+                    queue.put_nowait({"type": "nodes", "nodes": nodes})
+                    last = nodes
+                await asyncio.sleep(NODE_POLL_SECONDS)
+
+        async def drain_client():
+            # nothing is expected from the client; this just notices the disconnect
+            while True:
+                await websocket.receive_text()
+
+        node_task = asyncio.create_task(pump_nodes())
+        client_task = asyncio.create_task(drain_client())
+        try:
+            await websocket.send_json({"type": "sessions", "sessions": mgr.list_sessions()})
+            while True:
+                getter = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait(
+                    {getter, client_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if client_task in done:
+                    getter.cancel()
+                    break
+                await websocket.send_json(getter.result())
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            mgr.admin_unsubscribe(queue)
+            node_task.cancel()
+            client_task.cancel()
 
     # -------------------------------------------------------------- static web UI
     dist = Path(settings.web_dist)

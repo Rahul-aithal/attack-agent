@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     admin_token: str = ""  # empty => random token generated and printed at startup
+    # A participant whose connection drops (hotspot blip, sleep, refresh) can rejoin within this
+    # many seconds before the session is aborted.
+    participant_grace_seconds: float = 120.0
     public_sessions: bool = True  # participants may start a session without the admin token
     cors_origins: str = "*"
     web_dist: Path = Path("web/dist")

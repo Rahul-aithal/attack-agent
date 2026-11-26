@@ -2,14 +2,27 @@ import type { QItem, SessionEvent } from "./types";
 
 const base = ""; // same origin (served by FastAPI) or proxied in dev
 
-export async function createSession(participantId?: string, experimentId?: string): Promise<string> {
+export interface CreatedSession { session_id: string; join_code: string; }
+
+export async function createSession(participantId?: string, experimentId?: string): Promise<CreatedSession> {
   const res = await fetch(`${base}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ participant_id: participantId, experiment_id: experimentId, consent: true }),
   });
   if (!res.ok) throw new Error(`createSession failed: ${res.status}`);
-  return (await res.json()).session_id;
+  return await res.json();
+}
+
+/** Resolve a join code from the researcher to a session id (null if unknown). */
+export async function joinByCode(code: string): Promise<{ session_id: string; join_code: string; finished: boolean } | null> {
+  const res = await fetch(`${base}/join/${encodeURIComponent(code.trim())}`);
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+export function participantLink(code: string): string {
+  return `${location.origin}/?view=participant&code=${code}`;
 }
 
 export async function getQuestionnaire(): Promise<QItem[]> {
@@ -17,7 +30,10 @@ export async function getQuestionnaire(): Promise<QItem[]> {
   return (await res.json()).items;
 }
 
-export interface LiveSession { session_id: string; phase: string; turn_count: number; finished: boolean; participant_id?: string | null; }
+export interface LiveSession {
+  session_id: string; join_code: string | null; participant_connected: boolean;
+  phase: string; turn_count: number; finished: boolean; participant_id?: string | null;
+}
 
 export async function listSessions(token: string): Promise<LiveSession[]> {
   const res = await fetch(`${base}/sessions`, { headers: { "X-Admin-Token": token } });
@@ -63,27 +79,66 @@ export async function createExperiment(token: string, name: string) {
   });
 }
 
+export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
+
 export type Handlers = {
   onEvent: (e: SessionEvent) => void;
+  /** Called on every (re)connect, before the server replays the session history. */
   onOpen?: () => void;
-  onClose?: () => void;
+  onState?: (s: ConnState) => void;
 };
 
-export class SessionSocket {
-  ws: WebSocket;
-  constructor(sessionId: string, token: string | null, h: Handlers) {
+/**
+ * WebSocket that reconnects on its own (hotspot blips, laptop sleep). On each reconnect the
+ * server replays the whole session, so the caller resets its view in `onOpen`.
+ */
+class ReconnectingSocket {
+  private ws: WebSocket | null = null;
+  private stopped = false;
+  private attempt = 0;
+  private timer: number | undefined;
+
+  constructor(private path: string, private h: Handlers) { this.open(); }
+
+  private open() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const q = token ? `?admin_token=${encodeURIComponent(token)}` : "";
-    this.ws = new WebSocket(`${proto}://${location.host}/sessions/${sessionId}/stream${q}`);
-    this.ws.onmessage = (ev) => h.onEvent(JSON.parse(ev.data));
-    this.ws.onopen = () => h.onOpen?.();
-    this.ws.onclose = () => h.onClose?.();
+    this.h.onState?.(this.attempt ? "reconnecting" : "connecting");
+    const ws = new WebSocket(`${proto}://${location.host}${this.path}`);
+    this.ws = ws;
+    ws.onopen = () => { this.attempt = 0; this.h.onOpen?.(); this.h.onState?.("open"); };
+    ws.onmessage = (ev) => this.h.onEvent(JSON.parse(ev.data));
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
+      if (this.stopped) { this.h.onState?.("closed"); return; }
+      this.attempt += 1;
+      this.h.onState?.("reconnecting");
+      const delay = Math.min(10000, 500 * 2 ** Math.min(this.attempt, 5));
+      this.timer = window.setTimeout(() => this.open(), delay);
+    };
   }
+
   send(obj: any) {
-    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+    if (this.ws?.readyState === WebSocket.OPEN) { this.ws.send(JSON.stringify(obj)); return true; }
+    return false;
   }
-  message(text: string) { this.send({ kind: "message", text }); }
-  questionnaire(responses: Record<number, number>) { this.send({ kind: "questionnaire", responses }); }
-  abort() { this.send({ kind: "abort" }); }
-  close() { this.ws.close(); }
+
+  /** Stop for good (session finished, or the view was closed on purpose). */
+  close() { this.stopped = true; window.clearTimeout(this.timer); this.ws?.close(); }
+}
+
+export class SessionSocket extends ReconnectingSocket {
+  constructor(sessionId: string, token: string | null, h: Handlers) {
+    const q = token ? `?admin_token=${encodeURIComponent(token)}` : "";
+    super(`/sessions/${sessionId}/stream${q}`, h);
+  }
+  message(text: string) { return this.send({ kind: "message", text }); }
+  questionnaire(responses: Record<number, number>) { return this.send({ kind: "questionnaire", responses }); }
+  abort() { return this.send({ kind: "abort" }); }
+}
+
+/** Researcher feed: live session list + node health, pushed by the server. */
+export class AdminSocket extends ReconnectingSocket {
+  constructor(token: string, h: Handlers) {
+    super(`/admin/stream?admin_token=${encodeURIComponent(token)}`, h);
+  }
 }

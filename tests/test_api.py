@@ -94,3 +94,74 @@ def test_participant_stream_hides_profile(client):
         except WebSocketDisconnect:
             pass
     assert not saw_profile
+
+
+def test_admin_feed_pushes_sessions_and_nodes(client):
+    c, _ = client
+    with c.websocket_connect("/admin/stream?admin_token=tok") as feed:
+        first = feed.receive_json()
+        assert first == {"type": "sessions", "sessions": []}
+        sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
+        seen_session = seen_nodes = False
+        for _ in range(20):
+            msg = feed.receive_json()
+            if msg["type"] == "sessions" and any(s["session_id"] == sid for s in msg["sessions"]):
+                seen_session = True
+            if msg["type"] == "nodes":
+                seen_nodes = msg["nodes"][0]["node"] == "fake"
+            if seen_session and seen_nodes:
+                break
+        assert seen_session and seen_nodes
+
+
+def test_admin_feed_rejects_bad_token(client):
+    c, _ = client
+    with c.websocket_connect("/admin/stream?admin_token=wrong") as feed:
+        assert feed.receive_json()["type"] == "error"
+
+
+def _until(ws, event_type, limit=200):
+    seen = []
+    for _ in range(limit):
+        event = ws.receive_json()
+        seen.append(event)
+        if event["type"] == event_type:
+            return seen
+    raise AssertionError(f"no {event_type} event")
+
+
+def test_join_code_resolves_and_rejoin_replays_chat(client):
+    c, _ = client
+    created = c.post("/sessions", json={"consent": True}).json()
+    sid, code = created["session_id"], created["join_code"]
+    assert len(code) == 6
+    assert c.get(f"/join/{code.lower()}").json()["session_id"] == sid
+    assert c.get("/join/ZZZZZZ").status_code == 404
+
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:
+        _until(ws, "await_message")
+        ws.send_json({"kind": "message", "text": "I plan ahead and love helping people"})
+        _until(ws, "await_message")
+    # connection dropped mid-session; rejoin within the grace period
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:
+        replay = _until(ws, "await_message")
+        replay += _until(ws, "await_message")
+        types = [e["type"] for e in replay]
+        assert "participant_message" in types  # own messages come back too
+        assert types.count("agent_message") >= 2
+    assert c.get(f"/sessions/{sid}").json()["aborted"] is False
+
+
+def test_participant_who_never_returns_is_aborted(client):
+    import time
+
+    c, _ = client
+    c.app.state.manager.settings.participant_grace_seconds = 0.2
+    sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:
+        _until(ws, "await_message")
+    for _ in range(50):
+        if c.get(f"/sessions/{sid}").json()["aborted"]:
+            break
+        time.sleep(0.1)
+    assert c.get(f"/sessions/{sid}").json()["aborted"] is True

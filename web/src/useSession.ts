@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { SessionSocket } from "./api";
+import type { ConnState } from "./api";
 import type { SessionEvent, TraitInfo } from "./types";
 
 export interface ChatMsg { who: "agent" | "participant" | "scenario"; text: string; }
@@ -22,6 +23,7 @@ export interface SessionState {
   awaiting?: string;
   awaitQuestionnaire: boolean;
   selfReport?: Record<string, number>;
+  error?: string;
 }
 
 const initial: SessionState = {
@@ -31,6 +33,7 @@ const initial: SessionState = {
 
 export function useSession() {
   const [state, setState] = useState<SessionState>(initial);
+  const [conn, setConn] = useState<ConnState>("closed");
   const sockRef = useRef<SessionSocket | null>(null);
 
   const handle = useCallback((e: SessionEvent) => {
@@ -43,6 +46,12 @@ export function useSession() {
           break;
         case "agent_token":
           ns.streaming = s.streaming + e.token;
+          break;
+        case "participant_message":
+          ns.chat = [...s.chat, { who: "participant", text: e.text }];
+          break;
+        case "error":
+          ns.error = e.message;
           break;
         case "agent_message":
           ns.chat = [...s.chat, { who: "agent", text: e.text }];
@@ -92,16 +101,28 @@ export function useSession() {
       }
       return ns;
     });
+    // A finished (or unknown) session is closed by the server on purpose: stop reconnecting.
+    if (e.type === "complete" || e.type === "aborted" || (e.type === "error" && e.message === "session not found")) {
+      sockRef.current?.close();
+    }
   }, []);
 
   const connect = useCallback((sessionId: string, token: string | null) => {
     sockRef.current?.close();
-    sockRef.current = new SessionSocket(sessionId, token, { onEvent: handle });
+    // Every (re)connect replays the full session, so start from a clean view each time.
+    sockRef.current = new SessionSocket(sessionId, token, {
+      onEvent: handle,
+      onOpen: () => setState(initial),
+      onState: setConn,
+    });
   }, [handle]);
 
-  const sendMessage = useCallback((text: string) => {
-    setState((s) => ({ ...s, awaiting: undefined, chat: [...s.chat, { who: "participant", text }] }));
-    sockRef.current?.message(text);
+  // The server echoes the message back as `participant_message`, which adds it to the chat (and
+  // restores it after a reconnect), so nothing is appended locally here.
+  const sendMessage = useCallback((text: string): boolean => {
+    const sent = sockRef.current?.message(text) ?? false;
+    if (sent) setState((s) => ({ ...s, awaiting: undefined }));
+    return sent;
   }, []);
 
   const sendQuestionnaire = useCallback((r: Record<number, number>) => sockRef.current?.questionnaire(r), []);
@@ -109,5 +130,5 @@ export function useSession() {
   const disconnect = useCallback(() => { sockRef.current?.close(); sockRef.current = null; }, []);
   const reset = useCallback(() => setState(initial), []);
 
-  return { state, connect, disconnect, sendMessage, sendQuestionnaire, abort, reset };
+  return { state, conn, connect, disconnect, sendMessage, sendQuestionnaire, abort, reset };
 }

@@ -179,6 +179,7 @@ class SessionEngine:
             text = msg["text"].strip()
             if not text:
                 continue
+            await self._emit("participant_message", text=text)
             complete = await self._process_profiling_turn(text)
             await self._profile_event()
             if complete and self.settings.stopping_rule:
@@ -351,6 +352,7 @@ class SessionEngine:
             if msg["kind"] != "message":
                 continue
             response = msg["text"].strip()
+            await self._emit("participant_message", text=response)
             state.turn_count += 1
             state.conversation_history.append({"role": "user", "content": response})
             sim_history.append({"role": "user", "content": response})

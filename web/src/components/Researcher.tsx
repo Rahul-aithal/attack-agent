@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { createSession, createExperiment, getNodes, listExperiments, listSessions, postByok, putRouting } from "../api";
-import type { LiveSession } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { AdminSocket, createSession, createExperiment, listExperiments, participantLink, postByok, putRouting } from "../api";
+import type { ConnState, LiveSession } from "../api";
 import type { SessionState } from "../useSession";
 import { useSession } from "../useSession";
 import { Convergence, TraitRadar } from "./charts";
@@ -53,28 +53,65 @@ function ActivityBar({ s }: { s: SessionState }) {
   );
 }
 
-function LiveSessions({ token, onAttach }: { token: string; onAttach: (id: string) => void }) {
-  const [rows, setRows] = useState<LiveSession[] | null>(null);
+/** Live session list + node health pushed by the server over /admin/stream. */
+function useAdminFeed(token: string) {
+  const [sessions, setSessions] = useState<LiveSession[]>([]);
+  const [nodes, setNodes] = useState<any[]>([]);
+  const [conn, setConn] = useState<ConnState>("closed");
+  const [denied, setDenied] = useState(false);
+  const sock = useRef<AdminSocket | null>(null);
   useEffect(() => {
-    if (!token) { setRows(null); return; }
-    const load = () => listSessions(token).then(setRows).catch(() => setRows(null));
-    load();
-    const t = setInterval(load, 4000);
-    return () => clearInterval(t);
+    setDenied(false);
+    if (!token) return;
+    const s = new AdminSocket(token, {
+      onState: setConn,
+      onEvent: (e) => {
+        if (e.type === "sessions") setSessions(e.sessions);
+        else if (e.type === "nodes") setNodes(e.nodes);
+        else if (e.type === "error") { setDenied(true); s.close(); }
+      },
+    });
+    sock.current = s;
+    return () => s.close();
   }, [token]);
-  if (!token) return null;
-  if (rows === null) return <div className="text-xs text-rose-400">token not accepted (check the server log)</div>;
-  if (rows.length === 0) return <div className="text-xs text-slate-500">no sessions yet — start one on the participant device</div>;
+  return { sessions, nodes, conn, denied };
+}
+
+function LiveSessions({ rows, denied, onAttach }: { rows: LiveSession[]; denied: boolean; onAttach: (id: string, code?: string | null) => void }) {
+  if (denied) return <div className="text-xs text-rose-400">token not accepted (copy it again from the server terminal; it changes on every restart)</div>;
+  if (rows.length === 0) return <div className="text-xs text-slate-500">no sessions yet</div>;
   return (
     <div className="space-y-1">
       {rows.map((r) => (
         <div key={r.session_id} className="flex items-center gap-2 text-sm border-b border-line/60 py-1">
-          <span className="font-mono text-xs">{r.session_id.slice(-6)}</span>
+          <span className="font-mono text-xs tracking-widest">{r.join_code ?? r.session_id.slice(-6)}</span>
           <Badge color={r.finished ? "slate" : "green"}>{r.finished ? "done" : r.phase}</Badge>
           <span className="text-xs text-slate-500">turn {r.turn_count}</span>
-          <span className="ml-auto"><Button variant="ghost" onClick={() => onAttach(r.session_id)}>Watch</Button></span>
+          {!r.finished && (
+            <span className={`text-xs ${r.participant_connected ? "text-emerald-400" : "text-slate-500"}`}>
+              {r.participant_connected ? "● participant online" : "○ waiting for participant"}
+            </span>
+          )}
+          <span className="ml-auto"><Button variant="ghost" onClick={() => onAttach(r.session_id, r.join_code)}>Watch</Button></span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function JoinCard({ code }: { code: string }) {
+  const link = participantLink(code);
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="rounded-lg border border-accent/60 bg-panel px-4 py-3 text-sm">
+      <div className="text-xs text-slate-400">Give the participant this code (Participant → enter code) or link</div>
+      <div className="flex items-center gap-3 mt-1">
+        <span className="font-mono text-2xl tracking-[0.3em]">{code}</span>
+        <Button variant="ghost" onClick={() => { navigator.clipboard?.writeText(link).then(() => setCopied(true)); }}>
+          {copied ? "link copied" : "copy link"}
+        </Button>
+      </div>
+      <div className="text-xs text-slate-500 mt-1 break-all">{link}</div>
     </div>
   );
 }
@@ -84,19 +121,28 @@ export function Researcher() {
   const [token, setToken] = useState(localStorage.getItem("adminToken") || "");
   const [sessionId, setSessionId] = useState(new URLSearchParams(location.search).get("session") || "");
   const [attached, setAttached] = useState(false);
-  const [nodes, setNodes] = useState<any[]>([]);
+  const [joinCode, setJoinCode] = useState<string | null>(null);
   const [experiments, setExperiments] = useState<any[]>([]);
+  const feed = useAdminFeed(token);
+  const nodes = feed.nodes;
+  const watched = feed.sessions.find((r) => r.session_id === sessionId);
 
-  const refreshNodes = () => getNodes(token).then(setNodes).catch(() => setNodes([]));
+  // Node status arrives over the feed; routing/BYOK changes show up on its next health check.
+  const refreshNodes = () => {};
   const refreshExp = () => listExperiments(token).then(setExperiments).catch(() => setExperiments([]));
 
-  useEffect(() => {
-    if (attached) { refreshNodes(); refreshExp(); const t = setInterval(refreshNodes, 8000); return () => clearInterval(t); }
-  }, [attached]);
+  useEffect(() => { if (attached) refreshExp(); }, [attached]);
+  useEffect(() => { if (token) localStorage.setItem("adminToken", token); }, [token]);
 
-  function attach(id: string) {
+  async function newForParticipant() {
+    const created = await createSession();
+    attach(created.session_id, created.join_code);
+  }
+
+  function attach(id: string, code?: string | null) {
     localStorage.setItem("adminToken", token);
     setSessionId(id);
+    setJoinCode(code ?? null);
     setAttached(true);
     reset();
     connect(id, token);
@@ -128,17 +174,19 @@ export function Researcher() {
         <Panel title="Researcher / presenter access">
           <label className="text-xs text-slate-400">Admin token</label>
           <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="printed in server logs at startup" className="mt-1 mb-3" />
-          <label className="text-xs text-slate-400">Live sessions (refreshes every few seconds)</label>
-          <div className="mt-1 mb-3"><LiveSessions token={token} onAttach={attach} /></div>
+          <div className="mb-3">
+            <Button onClick={newForParticipant} disabled={!token || feed.denied}>New session for a participant</Button>
+            <span className="text-xs text-slate-500 ml-2">gives you a join code to hand over</span>
+          </div>
+          <label className="text-xs text-slate-400">
+            Live sessions {feed.conn === "open" ? <span className="text-emerald-400">● live</span> : token ? <span className="text-amber-400">○ connecting…</span> : null}
+          </label>
+          <div className="mt-1 mb-3">{token && <LiveSessions rows={feed.sessions} denied={feed.denied} onAttach={attach} />}</div>
           <label className="text-xs text-slate-400">Or attach by session id</label>
           <div className="flex gap-2 mt-1">
             <Input value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="sess_…" />
             <Button onClick={() => sessionId && attach(sessionId)} disabled={!token || !sessionId}>Attach</Button>
           </div>
-          <div className="text-center text-xs text-slate-500 my-2">— or —</div>
-          <Button variant="ghost" onClick={async () => attach(await createSession())} disabled={!token}>
-            Create a new session to drive myself
-          </Button>
         </Panel>
       </div>
     );
@@ -148,12 +196,21 @@ export function Researcher() {
     <div className="max-w-6xl mx-auto mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
       <div className="lg:col-span-2 space-y-4">
         <div className="flex items-center gap-2">
-          <Badge color="blue">session {sessionId.slice(-6)}</Badge>
+          <Badge color="blue">session {joinCode ?? watched?.join_code ?? sessionId.slice(-6)}</Badge>
+          {watched && !watched.finished && (
+            <Badge color={watched.participant_connected ? "green" : "red"}>
+              {watched.participant_connected ? "participant online" : "participant offline"}
+            </Badge>
+          )}
           <Button variant="ghost" onClick={detach}>← all sessions</Button>
           <Badge color="slate">phase: {state.phase || "—"}</Badge>
           <Badge color="amber">stability {state.stability.toFixed(2)}</Badge>
           <Badge color="amber">avg conf {state.avgConfidence.toFixed(2)}</Badge>
         </div>
+        {/* hand-over card until the participant has joined and sent their first message */}
+        {(joinCode ?? watched?.join_code) && !watched?.participant_connected && (watched?.turn_count ?? 0) === 0 && (
+          <JoinCard code={(joinCode ?? watched?.join_code)!} />
+        )}
         <ActivityBar s={state} />
         <Panel title="Big Five — inferred vs self-report">
           <TraitRadar traits={state.traits} selfReport={state.selfReport} />
