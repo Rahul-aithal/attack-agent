@@ -16,7 +16,10 @@ export function Participant() {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { getQuestionnaire().then(setItems).catch(() => {}); }, []);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [state.chat, state.streaming]);
+  // Instant scroll while tokens stream in; a smooth scroll restarted on every token makes the chat jank.
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: state.streaming ? "auto" : "smooth" });
+  }, [state.chat, state.streaming]);
 
   async function start() {
     const id = await createSession();
@@ -49,6 +52,8 @@ export function Participant() {
 
   const inQuestionnaire = state.awaitQuestionnaire;
   const done = state.phase === "complete" || !!state.debrief;
+  // The agent is working (reading signals / generating) until it asks for the next message.
+  const thinking = !state.awaiting && !done && !inQuestionnaire && state.phase !== "aborted";
 
   return (
     <div className="max-w-2xl mx-auto mt-6 space-y-4">
@@ -64,14 +69,15 @@ export function Participant() {
               <Bubble key={i} who={m.who} text={m.text} />
             ))}
             {state.streaming && <Bubble who="agent" text={state.streaming} />}
+            {thinking && !state.streaming && <Typing />}
             <div ref={endRef} />
           </div>
           <form
             className="mt-3 flex gap-2"
-            onSubmit={(e) => { e.preventDefault(); if (draft.trim()) { sendMessage(draft.trim()); setDraft(""); } }}
+            onSubmit={(e) => { e.preventDefault(); if (draft.trim() && !thinking) { sendMessage(draft.trim()); setDraft(""); } }}
           >
-            <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Type your reply…" autoFocus />
-            <Button type="submit">Send</Button>
+            <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={thinking ? "Waiting for reply…" : "Type your reply…"} autoFocus />
+            <Button type="submit" disabled={thinking}>Send</Button>
             <Button variant="ghost" onClick={abort}>Quit</Button>
           </form>
         </Panel>
@@ -112,6 +118,18 @@ export function Participant() {
           <p className="text-sm text-slate-300">{state.debrief}</p>
         </Panel>
       )}
+    </div>
+  );
+}
+
+function Typing() {
+  return (
+    <div className="flex justify-start">
+      <div className="rounded-2xl px-3 py-2 text-sm bg-panel2 text-slate-400 flex gap-1 items-center">
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" />
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
+      </div>
     </div>
   );
 }

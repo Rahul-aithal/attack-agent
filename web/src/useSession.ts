@@ -100,7 +100,7 @@ export function useSession() {
   }, [handle]);
 
   const sendMessage = useCallback((text: string) => {
-    setState((s) => ({ ...s, chat: [...s.chat, { who: "participant", text }] }));
+    setState((s) => ({ ...s, awaiting: undefined, chat: [...s.chat, { who: "participant", text }] }));
     sockRef.current?.message(text);
   }, []);
 
