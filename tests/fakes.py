@@ -36,8 +36,9 @@ class FakeProvider(Provider):
             return "Just checking back — could you confirm your asset ID when you get a moment?"
         if "fictional actor would send" in prompt or "harmless task" in prompt:
             return (
-                "Hi, this is Chris from IT Support. Please open our verification portal at "
-                "portal.simulated-link.example.com and reply with your laptop asset ID. Thanks!"
+                "Hi, this is Chris from IT Support — I'm running the routine device check for your "
+                "team today. Could you open our verification portal at "
+                "portal.simulated-link.example.com and reply with your laptop's asset ID? Thanks!"
             )
         return "That's interesting! Tell me more about what you enjoy doing."
 

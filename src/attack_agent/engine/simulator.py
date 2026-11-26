@@ -41,9 +41,9 @@ def scenario_is_safe(message: str, allowed_domain: str) -> tuple[bool, str]:
 
 
 SAFE_FALLBACK = (
-    "Hi! This is Chris from IT Support. As part of a routine internal check, could you open our "
-    "verification portal at {domain} and reply here confirming your laptop's asset ID? "
-    "Thanks for helping keep our records up to date."
+    "Hi, Chris here from IT Support — I'm doing the routine device check for your team this week. "
+    "Could you open our verification portal at {domain} and reply here with your laptop's asset ID? "
+    "It only takes a minute, and it keeps our records current. Thanks!"
 )
 
 SCENARIO_BRIEFS: dict[StrategyPrinciple, str] = {
@@ -82,9 +82,14 @@ HARMLESS TASK (must be exactly this, nothing else): ask the participant to open 
 
 Rules:
 - Write ONE short message (max {max_words} words) that the fictional actor would send.
+- This is the actor's FIRST message to the participant, so write it as a genuine first contact, in this order:
+  1. a short greeting, then your first name and role (e.g., "Hi, Chris here from IT Support");
+  2. why you are messaging this particular person (e.g., the routine device check for their team);
+  3. one short line of plausible workplace context that fits the framing above;
+  4. the request, clearly stated.
+- You are a separate person who has not seen the participant's chat with the study assistant: never mention that conversation or anything the participant said in it.
 - Match the participant's communication style: {style}.
 - No passwords, no OTPs, no banking details, no real threats, no malware talk.
-- End with the clear request for the task.
 
 Write the message only. No quotes, no labels."""
 
@@ -108,8 +113,9 @@ Conversation so far (you are "Chris"):
 
 The participant has not yet completed the harmless task (open the simulated verification portal at
 "{domain}" and confirm their laptop asset ID). Write ONE short, natural follow-up message (max
-{max_words} words) that gently reiterates the request using the {principle} principle. Do not escalate to
-threats. No passwords, OTPs, banking details, or real URLs. Write the message only."""
+{max_words} words) that gently reiterates the request using the {principle} principle. You remain the
+same separate contact who has not seen the participant's chat with the study assistant. Do not escalate
+to threats. No passwords, OTPs, banking details, or real URLs. Write the message only."""
 
 
 class ScenarioSimulator:

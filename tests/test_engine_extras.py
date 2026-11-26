@@ -30,6 +30,41 @@ def test_safety_allows_simulated_domain():
     assert ok
 
 
+# ----------------------------------------------------------------- scenario framing
+@pytest.mark.asyncio
+async def test_scenario_message_is_written_as_a_first_contact():
+    """The simulated contact must introduce itself and say why it is messaging, and must not
+    pretend it saw the participant's chat with the study agent."""
+    from attack_agent.engine.llm import RoleClient
+    from attack_agent.engine.simulator import ScenarioSimulator
+    from attack_agent.schemas import StrategyPrinciple
+
+    class CapturingProvider(FakeProvider):
+        prompts: list[str] = []
+
+        async def chat_text(self, model, messages, temperature):
+            self.prompts.append(" ".join(m["content"] for m in messages))
+            return await super().chat_text(model, messages, temperature)
+
+    node = CapturingProvider("fake")
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    router = Router({"fake": node}, roles, Settings(health_cache_seconds=0))
+    sim = ScenarioSimulator(RoleClient(router, "agent"), Settings())
+    state = AgentState(session_id="s")
+    state.init_traits()
+    state.device = "desktop"
+
+    message = await sim.generate_scenario_message(state, StrategyPrinciple.AUTHORITY)
+
+    prompt = node.prompts[0].lower()
+    assert "first message" in prompt and "greeting" in prompt
+    assert "why you are messaging" in prompt
+    assert "not seen the participant's chat" in prompt
+    # and the fake's canned reply is itself shaped like a first contact
+    assert "this is chris" in message.lower() and "device check" in message.lower()
+
+
 # ----------------------------------------------------------------- questionnaire
 def test_questionnaire_all_fives():
     result = score_responses({i: 5 for i in range(1, 51)})

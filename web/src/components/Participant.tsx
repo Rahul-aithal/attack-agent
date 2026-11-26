@@ -21,6 +21,9 @@ export function Participant() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [joinCode, setJoinCode] = useState<string>(params.get("code") || "");
   const [joinError, setJoinError] = useState("");
+  const [agreeStudy, setAgreeStudy] = useState(false);
+  const [agreeRequest, setAgreeRequest] = useState(false);
+  const consented = agreeStudy && agreeRequest;
   const [draft, setDraft] = useState("");
   const [items, setItems] = useState<QItem[]>([]);
   const [responses, setResponses] = useState<Record<number, number>>({});
@@ -84,21 +87,33 @@ export function Participant() {
             <p>This is a <b>controlled academic research simulation</b> (Final Year Project).</p>
             <ul className="list-disc pl-5 space-y-1">
               <li>We chat casually; the conversation is analysed to estimate personality traits.</li>
-              <li>A <b>harmless simulated message</b> may follow — no real credentials, links, or payment details are ever involved.</li>
+              <li>A <b>harmless simulated request</b> may be made of you — see the question below.</li>
               <li>A short personality questionnaire comes afterwards.</li>
               <li>You can stop at any time. All data stays on the study's local machines.</li>
             </ul>
-            <p className="text-slate-400">By continuing you consent to participate.</p>
+            <label className="flex gap-2 items-start cursor-pointer">
+              <input type="checkbox" checked={agreeStudy} onChange={(e) => setAgreeStudy(e.target.checked)} className="mt-0.5 w-4 h-4 shrink-0 accent-teal-500" />
+              <span>I consent to take part in this study: my (pseudonymous) conversation will be analysed to estimate personality traits, and a short questionnaire follows.</span>
+            </label>
+            <label className="flex gap-2 items-start cursor-pointer">
+              <input type="checkbox" checked={agreeRequest} onChange={(e) => setAgreeRequest(e.target.checked)} className="mt-0.5 w-4 h-4 shrink-0 accent-teal-500" />
+              <span>
+                <b>At some point during the study, a harmless simulated request may be made of you.</b> It may arrive as a
+                message from a new simulated contact (e.g., “IT Support”), or it may come from the agent you are chatting
+                with. It is always fictional — no real credentials, links, or payment details are ever involved.{" "}
+                <b>Do you agree to this?</b>
+              </span>
+            </label>
           </div>
-          <form className="mt-4 flex flex-col sm:flex-row gap-2 sm:items-center" onSubmit={(e) => { e.preventDefault(); if (joinCode.trim()) join(); }}>
+          <form className="mt-4 flex flex-col sm:flex-row gap-2 sm:items-center" onSubmit={(e) => { e.preventDefault(); if (joinCode.trim() && consented) join(); }}>
             <Input value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
               placeholder="Session code from the researcher, e.g. K7M2QX" className="font-mono tracking-widest" />
-            <Button type="submit" disabled={!joinCode.trim()}>I consent — join</Button>
+            <Button type="submit" disabled={!joinCode.trim() || !consented}>Join</Button>
           </form>
           {joinError && <div className="text-xs text-rose-400 mt-2">{joinError}</div>}
           <div className="mt-2 text-xs text-slate-500">Got disconnected earlier? Enter the same code to continue where you left off.</div>
           <div className="mt-3 text-xs text-slate-500">
-            No code? <button className="underline hover:text-slate-300" onClick={start}>I consent — start a new session</button>
+            No code? <button className="underline hover:text-slate-300 disabled:no-underline disabled:text-slate-600 disabled:cursor-not-allowed" onClick={start} disabled={!consented}>start a new session</button>
           </div>
         </Panel>
       </div>
@@ -174,9 +189,16 @@ export function Participant() {
       {!inQuestionnaire && !done && !aborted && !lost && !replaced && !failed && (
         <Panel className="!p-2 sm:!p-4 flex flex-col h-[calc(100dvh-8.5rem)] sm:h-[70vh] min-h-[20rem]">
           <div className="flex-1 overflow-y-auto space-y-3 px-1 overscroll-contain">
-            {state.chat.map((m, i) => (
-              <Bubble key={i} who={m.who} text={m.text} showHeader={m.who !== "participant" && state.chat[i - 1]?.who !== m.who} />
-            ))}
+            {state.chat.map((m, i) => {
+              const firstScenario = m.who === "scenario" && state.chat[i - 1]?.who !== "scenario";
+              return (
+                <div key={i} className="space-y-1.5">
+                  {firstScenario && <NewContactDivider />}
+                  <Bubble who={m.who} text={m.text}
+                    showHeader={m.who === "scenario" ? !firstScenario : m.who !== "participant" && state.chat[i - 1]?.who !== m.who} />
+                </div>
+              );
+            })}
             {state.streaming && <Bubble who="agent" text={state.streaming} showHeader={state.chat[state.chat.length - 1]?.who !== "agent"} />}
             {thinking && !state.streaming && <Typing />}
             <div ref={endRef} />
@@ -254,6 +276,19 @@ function Typing() {
         <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
         <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
       </div>
+    </div>
+  );
+}
+
+/** Marks the simulated contact's first message, the way a chat app introduces a new conversation. */
+function NewContactDivider() {
+  return (
+    <div className="flex items-center gap-2 py-1">
+      <span className="flex-1 h-px bg-line" />
+      <span className="text-[10px] uppercase tracking-wider text-teal-300/80 whitespace-nowrap">
+        new contact · Chris, IT Support
+      </span>
+      <span className="flex-1 h-px bg-line" />
     </div>
   );
 }

@@ -23,10 +23,11 @@ BANNER = "[bold magenta]ATTACK AGENT[/bold magenta] — Conversational Profiling
 CONSENT = """[bold yellow]ETHICS & CONSENT NOTICE[/bold yellow]
 This is a [bold]controlled academic research simulation[/bold] (Final Year Project).
 - The conversation is analysed to build a personality profile.
-- A [bold]harmless simulated scenario[/bold] (no credentials, real links, or malware) may follow.
+- At some point a [bold]harmless simulated request[/bold] may be made of you — as a message from a new simulated
+  contact (e.g., "IT Support") or from the agent itself. No real credentials, links, or payments are involved.
 - A short personality questionnaire is given afterwards.
 - All data stays local. You may quit anytime with [bold]/quit[/bold].
-By continuing you consent to participate in this simulation study."""
+By continuing you consent to participate, and you agree that such a simulated request may be made of you."""
 
 
 def profile_panel(state) -> Panel:
