@@ -106,7 +106,8 @@ export function useSession() {
 
   const sendQuestionnaire = useCallback((r: Record<number, number>) => sockRef.current?.questionnaire(r), []);
   const abort = useCallback(() => sockRef.current?.abort(), []);
+  const disconnect = useCallback(() => { sockRef.current?.close(); sockRef.current = null; }, []);
   const reset = useCallback(() => setState(initial), []);
 
-  return { state, connect, sendMessage, sendQuestionnaire, abort, reset };
+  return { state, connect, disconnect, sendMessage, sendQuestionnaire, abort, reset };
 }

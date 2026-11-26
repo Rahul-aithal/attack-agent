@@ -4,9 +4,19 @@ import { Researcher } from "./components/Researcher";
 
 export default function App() {
   const params = new URLSearchParams(location.search);
-  const [mode, setMode] = useState<"participant" | "researcher" | null>(
+  const [mode, setModeState] = useState<"participant" | "researcher" | null>(
     params.get("view") === "researcher" ? "researcher" : params.get("view") === "participant" ? "participant" : null
   );
+  // Each view stays mounted once opened, so switching tabs never drops a live session (a closed
+  // participant socket aborts the session on the server).
+  const [opened, setOpened] = useState({ participant: mode === "participant", researcher: mode === "researcher" });
+  const setMode = (m: "participant" | "researcher") => {
+    setModeState(m);
+    setOpened((o) => ({ ...o, [m]: true }));
+    const url = new URL(location.href);
+    url.searchParams.set("view", m);
+    history.replaceState(null, "", url);
+  };
 
   return (
     <div className="min-h-screen">
@@ -36,8 +46,8 @@ export default function App() {
             <p className="text-xs text-slate-500">Academic research prototype. All scenarios are fictional and harmless.</p>
           </div>
         )}
-        {mode === "participant" && <Participant />}
-        {mode === "researcher" && <Researcher />}
+        {opened.participant && <div hidden={mode !== "participant"}><Participant /></div>}
+        {opened.researcher && <div hidden={mode !== "researcher"}><Researcher /></div>}
       </main>
     </div>
   );

@@ -38,6 +38,7 @@ class SessionManager:
         self._calls: dict[str, list[LLMCallRecord]] = {}
         self._meta: dict[str, dict] = {}
         self.experiments: dict[str, Experiment] = {}
+        self._persisted: set[str] = set()
         self.router.on_call(self._record_call)
 
     # ------------------------------------------------------------------ calls
@@ -74,8 +75,10 @@ class SessionManager:
 
     async def persist(self, session_id: str) -> None:
         engine = self.sessions.get(session_id)
-        if engine is None:
+        # Several sockets (participant + researchers) may finish the same session; save it once.
+        if engine is None or session_id in self._persisted:
             return
+        self._persisted.add(session_id)
         meta = self._meta.get(session_id, {})
         calls = self._calls.get(session_id, [])
         try:
@@ -112,6 +115,22 @@ class SessionManager:
             summary["stability"] = round(state.profile_stability, 3)
             summary["self_report"] = state.self_report_scores
         return summary
+
+    def list_sessions(self) -> list[dict]:
+        """Newest first; researcher-only (no profile data, just enough to pick one)."""
+        rows = []
+        for sid, engine in self.sessions.items():
+            state = engine.state
+            rows.append(
+                {
+                    "session_id": sid,
+                    "phase": state.phase.value,
+                    "turn_count": state.turn_count,
+                    "finished": engine.finished,
+                    "participant_id": self._meta.get(sid, {}).get("participant_id"),
+                }
+            )
+        return list(reversed(rows))
 
     def filter_event(self, event: dict, include_profile: bool) -> dict | None:
         if not include_profile and event.get("type") in RESEARCHER_ONLY_EVENTS:

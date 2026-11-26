@@ -129,3 +129,41 @@ async def test_session_abort(tmp_path):
             seen_aborted = True
     assert seen_aborted
     assert engine.state.aborted
+
+
+@pytest.mark.asyncio
+async def test_observer_sees_every_event_including_late_join(tmp_path):
+    """A researcher dashboard attached alongside the participant must receive the full stream
+    (history replayed if it joins late), not steal events from the participant."""
+    import asyncio
+
+    settings = Settings(
+        min_turns=2, max_turns=3, health_cache_seconds=0,
+        output_dir=tmp_path, twin_enabled=True, questionnaire_enabled=False,
+    )
+    node = FakeProvider("fake")
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    router = Router({"fake": node}, roles, settings)
+    engine = SessionEngine(router, settings=settings)
+
+    participant_events: list[str] = []
+    observer_events: list[str] = []
+    observer_task: asyncio.Task | None = None
+
+    async def observe():
+        async for event in engine.events():
+            observer_events.append(event["type"])
+
+    async for event in engine.events():
+        participant_events.append(event["type"])
+        if event["type"] == "await_message":
+            if observer_task is None:  # dashboard joins after the session has started
+                observer_task = asyncio.create_task(observe())
+            engine.submit_message("I like to plan ahead and help my friends out.")
+    assert observer_task is not None
+    await observer_task
+
+    assert "complete" in participant_events
+    assert observer_events == participant_events
+    assert "twin_prediction" in observer_events

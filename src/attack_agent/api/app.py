@@ -115,6 +115,10 @@ def create_app() -> FastAPI:
         )
         return {"session_id": engine.session_id}
 
+    @app.get("/sessions", dependencies=[Depends(require_admin)])
+    async def list_sessions():
+        return {"sessions": app.state.manager.list_sessions()}
+
     @app.get("/sessions/{session_id}")
     async def get_session(
         session_id: str,
@@ -221,7 +225,10 @@ def create_app() -> FastAPI:
                     elif kind == "abort":
                         engine.abort()
             except WebSocketDisconnect:
-                engine.abort()
+                # Only the participant leaving ends the session; a researcher closing the
+                # dashboard must not abort it.
+                if not include_profile:
+                    engine.abort()
             except Exception as exc:  # pragma: no cover
                 logger.debug("ws input pump ended: {}", exc)
 

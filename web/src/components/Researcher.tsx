@@ -1,15 +1,88 @@
 import { useEffect, useState } from "react";
-import { createSession, createExperiment, getNodes, listExperiments, postByok, putRouting } from "../api";
+import { createSession, createExperiment, getNodes, listExperiments, listSessions, postByok, putRouting } from "../api";
+import type { LiveSession } from "../api";
+import type { SessionState } from "../useSession";
 import { useSession } from "../useSession";
 import { Convergence, TraitRadar } from "./charts";
 import { Badge, Button, Input, Panel } from "./ui";
 
 const ROLES = ["agent", "extractor", "twin", "judge", "sim_participant"];
 
+// What the engine is doing right now, derived from the phase and the events seen so far.
+function activity(s: SessionState): { text: string; busy: boolean; who?: string } {
+  switch (s.phase) {
+    case "":
+    case "consent":
+      return { text: "starting session", busy: true, who: "agent" };
+    case "profiling":
+      return s.awaiting === "profiling"
+        ? { text: `waiting for participant (turn ${s.convergence.length + 1})`, busy: false }
+        : { text: "reading signals + writing reply", busy: true, who: "extractor → agent" };
+    case "twin_handoff":
+      return s.twin
+        ? { text: `twin predicted: ${s.twin.predicted_outcome}`, busy: false }
+        : { text: "twin is running — drafting scenario and predicting the outcome", busy: true, who: "agent → twin" };
+    case "simulation":
+      return s.awaiting === "scenario"
+        ? { text: "scenario sent — waiting for participant's response", busy: false }
+        : { text: "sending scenario message", busy: true, who: "agent" };
+    case "evaluation":
+      return { text: "judging the real outcome", busy: true, who: "judge" };
+    case "questionnaire":
+      return { text: "participant is filling in the questionnaire", busy: false };
+    case "debrief":
+    case "complete":
+      return { text: "session complete", busy: false };
+    case "aborted":
+      return { text: "session aborted", busy: false };
+    default:
+      return { text: s.phase, busy: false };
+  }
+}
+
+function ActivityBar({ s }: { s: SessionState }) {
+  const a = activity(s);
+  return (
+    <div className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-sm ${a.busy ? "border-amber-600 bg-amber-950/30" : "border-line bg-panel"}`}>
+      {a.busy
+        ? <span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
+        : <span className="w-3 h-3 rounded-full bg-emerald-500" />}
+      <span>{a.text}</span>
+      {a.who && <span className="ml-auto text-xs text-slate-400 font-mono">{a.who}</span>}
+    </div>
+  );
+}
+
+function LiveSessions({ token, onAttach }: { token: string; onAttach: (id: string) => void }) {
+  const [rows, setRows] = useState<LiveSession[] | null>(null);
+  useEffect(() => {
+    if (!token) { setRows(null); return; }
+    const load = () => listSessions(token).then(setRows).catch(() => setRows(null));
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [token]);
+  if (!token) return null;
+  if (rows === null) return <div className="text-xs text-rose-400">token not accepted (check the server log)</div>;
+  if (rows.length === 0) return <div className="text-xs text-slate-500">no sessions yet — start one on the participant device</div>;
+  return (
+    <div className="space-y-1">
+      {rows.map((r) => (
+        <div key={r.session_id} className="flex items-center gap-2 text-sm border-b border-line/60 py-1">
+          <span className="font-mono text-xs">{r.session_id.slice(-6)}</span>
+          <Badge color={r.finished ? "slate" : "green"}>{r.finished ? "done" : r.phase}</Badge>
+          <span className="text-xs text-slate-500">turn {r.turn_count}</span>
+          <span className="ml-auto"><Button variant="ghost" onClick={() => onAttach(r.session_id)}>Watch</Button></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function Researcher() {
-  const { state, connect } = useSession();
+  const { state, connect, disconnect, reset } = useSession();
   const [token, setToken] = useState(localStorage.getItem("adminToken") || "");
-  const [sessionId, setSessionId] = useState("");
+  const [sessionId, setSessionId] = useState(new URLSearchParams(location.search).get("session") || "");
   const [attached, setAttached] = useState(false);
   const [nodes, setNodes] = useState<any[]>([]);
   const [experiments, setExperiments] = useState<any[]>([]);
@@ -25,8 +98,29 @@ export function Researcher() {
     localStorage.setItem("adminToken", token);
     setSessionId(id);
     setAttached(true);
+    reset();
     connect(id, token);
+    // Remember the watched session in the URL so a reload or a shared link reopens it.
+    const url = new URL(location.href);
+    url.searchParams.set("view", "researcher");
+    url.searchParams.set("session", id);
+    history.replaceState(null, "", url);
   }
+
+  function detach() {
+    disconnect();
+    reset();
+    setAttached(false);
+    const url = new URL(location.href);
+    url.searchParams.delete("session");
+    history.replaceState(null, "", url);
+  }
+
+  // Opened with ?session=<id> and a saved token: attach straight away.
+  useEffect(() => {
+    if (sessionId && token && !attached) attach(sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!attached) {
     return (
@@ -34,7 +128,9 @@ export function Researcher() {
         <Panel title="Researcher / presenter access">
           <label className="text-xs text-slate-400">Admin token</label>
           <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="printed in server logs at startup" className="mt-1 mb-3" />
-          <label className="text-xs text-slate-400">Attach to an existing session id (from a participant device)</label>
+          <label className="text-xs text-slate-400">Live sessions (refreshes every few seconds)</label>
+          <div className="mt-1 mb-3"><LiveSessions token={token} onAttach={attach} /></div>
+          <label className="text-xs text-slate-400">Or attach by session id</label>
           <div className="flex gap-2 mt-1">
             <Input value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="sess_…" />
             <Button onClick={() => sessionId && attach(sessionId)} disabled={!token || !sessionId}>Attach</Button>
@@ -53,10 +149,12 @@ export function Researcher() {
       <div className="lg:col-span-2 space-y-4">
         <div className="flex items-center gap-2">
           <Badge color="blue">session {sessionId.slice(-6)}</Badge>
+          <Button variant="ghost" onClick={detach}>← all sessions</Button>
           <Badge color="slate">phase: {state.phase || "—"}</Badge>
           <Badge color="amber">stability {state.stability.toFixed(2)}</Badge>
           <Badge color="amber">avg conf {state.avgConfidence.toFixed(2)}</Badge>
         </div>
+        <ActivityBar s={state} />
         <Panel title="Big Five — inferred vs self-report">
           <TraitRadar traits={state.traits} selfReport={state.selfReport} />
         </Panel>
@@ -79,7 +177,9 @@ export function Researcher() {
                   </div>
                 )}
               </div>
-            ) : <div className="text-sm text-slate-500">pending…</div>}
+            ) : state.phase === "twin_handoff"
+              ? <div className="text-sm text-amber-300 flex items-center gap-2"><span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />twin is running…</div>
+              : <div className="text-sm text-slate-500">starts after profiling (≥ 8 participant messages, or once confident)</div>}
           </Panel>
           <Panel title="ReAct trace">
             <div className="text-xs font-mono text-slate-400 max-h-40 overflow-y-auto space-y-1">

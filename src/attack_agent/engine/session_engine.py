@@ -35,7 +35,7 @@ from attack_agent.react.loop import ReActLoop
 from attack_agent.schemas import Outcome, Phase, TurnLog
 from attack_agent.state import AgentState
 
-DONE = object()  # sentinel pushed onto the event queue when the session finishes
+DONE = object()  # sentinel pushed to every subscriber when the session finishes
 
 
 class SessionEngine:
@@ -57,7 +57,10 @@ class SessionEngine:
         self.evaluator = OutcomeEvaluator(RoleClient(router, "judge"))
         self.twin = DigitalTwin(RoleClient(router, "twin"), RoleClient(router, "judge"))
 
-        self._events: asyncio.Queue[Any] = asyncio.Queue()
+        # Events fan out to every subscriber (participant socket, researcher dashboard, CLI);
+        # a late subscriber first receives the full history so it can rebuild the view.
+        self._history: list[Any] = []
+        self._subscribers: list[asyncio.Queue[Any]] = []
         self._input: asyncio.Queue[dict] = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._aborted = False
@@ -72,13 +75,26 @@ class SessionEngine:
             self._task = asyncio.create_task(self._run_guarded())
 
     async def events(self) -> AsyncIterator[dict]:
-        """Yield events until the session completes."""
+        """Yield every event (history first, then live) until the session completes. Any number
+        of consumers may iterate concurrently; each sees the full stream."""
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        for item in self._history:
+            queue.put_nowait(item)
+        self._subscribers.append(queue)
         self.start()
-        while True:
-            item = await self._events.get()
-            if item is DONE:
-                return
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is DONE:
+                    return
+                yield item
+        finally:
+            if queue in self._subscribers:
+                self._subscribers.remove(queue)
+
+    @property
+    def finished(self) -> bool:
+        return bool(self._history) and self._history[-1] is DONE
 
     def submit_message(self, text: str) -> None:
         self._input.put_nowait({"kind": "message", "text": text})
@@ -96,8 +112,13 @@ class SessionEngine:
         return self.state
 
     # ------------------------------------------------------------------ helpers
+    def _publish(self, item: Any) -> None:
+        self._history.append(item)
+        for queue in list(self._subscribers):
+            queue.put_nowait(item)
+
     async def _emit(self, type_: str, **data: Any) -> None:
-        await self._events.put({"type": type_, "session_id": self.session_id, **data})
+        self._publish({"type": type_, "session_id": self.session_id, **data})
 
     async def _set_phase(self, phase: Phase) -> None:
         self.state.phase = phase
@@ -133,7 +154,7 @@ class SessionEngine:
             await self._emit("error", message=str(exc))
         finally:
             current_session_id.reset(token)
-            await self._events.put(DONE)
+            self._publish(DONE)
 
     async def _run(self) -> None:
         await self._set_phase(Phase.CONSENT)

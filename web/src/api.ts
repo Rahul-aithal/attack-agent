@@ -17,6 +17,14 @@ export async function getQuestionnaire(): Promise<QItem[]> {
   return (await res.json()).items;
 }
 
+export interface LiveSession { session_id: string; phase: string; turn_count: number; finished: boolean; participant_id?: string | null; }
+
+export async function listSessions(token: string): Promise<LiveSession[]> {
+  const res = await fetch(`${base}/sessions`, { headers: { "X-Admin-Token": token } });
+  if (!res.ok) throw new Error("unauthorized");
+  return (await res.json()).sessions;
+}
+
 export async function getNodes(token: string) {
   const res = await fetch(`${base}/nodes`, { headers: { "X-Admin-Token": token } });
   if (!res.ok) throw new Error("unauthorized");
