@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 {"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/useSession.ts","./src/components/History.tsx","./src/components/Monitor.tsx","./src/components/Participant.tsx","./src/components/Researcher.tsx","./src/components/Steering.tsx","./src/components/charts.tsx","./src/components/ui.tsx"],"version":"5.9.3"}
+=======
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/usesession.ts","./src/components/monitor.tsx","./src/components/participant.tsx","./src/components/researcher.tsx","./src/components/steering.tsx","./src/components/charts.tsx","./src/components/ui.tsx"],"version":"5.9.3"}
+>>>>>>> 22ec51c (capitalized)
