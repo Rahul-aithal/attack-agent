@@ -1,9 +1,12 @@
 """The profiling conversation ("Alex").
 
-Question quality matters more than quantity: personality shows up in what people *do* in concrete
-situations, not in how they label themselves. So Alex reacts to something specific the participant
-said, then asks one open, situational question, staying on a topic for a couple of turns while it
-is still informative before moving to the least-covered trait.
+Alex plays the friendly new one around here — light, curious, still finding their feet — and the
+chat should read as a conversation between people, not an interview. Questions span everyday
+personal territory (free time, friendships, feelings, small habits) as well as work and study:
+personality shows up in what people *do* in concrete situations, not in how they label themselves.
+So Alex reacts to something specific the participant said, then asks one open, situational
+question, staying on a topic for a couple of turns while it is still informative before moving to
+the least-covered trait.
 """
 
 from __future__ import annotations
@@ -23,40 +26,64 @@ TRAIT_TOPIC_HINTS = {
 
 # Angles for concrete, situational questions (examples for the model, never to be read out
 # verbatim). Behaviour in a real situation is far better evidence than a self-description.
+# The bank deliberately mixes everyday-work and everyday-personal territory: personality shows
+# up as much in free time, friendships and feelings as in how someone works.
 TRAIT_ANGLES = {
     "openness": [
         "something new they tried recently and what drew them to it",
         "a show, book, game or idea that changed how they think about something",
         "on a free day with no plans: somewhere familiar or somewhere new",
         "a hobby or skill they'd love to pick up and why",
+        "the last time they changed something about themselves just to see how it felt",
+        "whether their head is usually full of daydreams and ideas or quiet and focused",
+        "something they believed for years and then changed their mind about",
+        "what they were like as a kid — the dreamer, the builder, the explorer?",
     ],
     "conscientiousness": [
         "how they handled their last big deadline or exam week",
         "whether they plan trips in detail or decide on the go",
         "how they keep track of things to do (lists, apps, memory)",
         "what they do when a plan falls through at the last minute",
+        "what their room or desk honestly looks like right now",
+        "a personal project (not for work or class) they started — did it ever get finished?",
+        "their typical morning: planned and calm, or chaos and running late?",
+        "how they feel when something is left half-done",
     ],
     "extraversion": [
         "their ideal weekend: a big group, a few close friends, or time alone",
         "how they feel after a long party or social event",
         "whether they're the one who starts conversations with new people",
         "what they did the last time they had an evening completely free",
+        "how they feel on a first day somewhere new, before they know anyone",
+        "whether they'd rather call or text — and who they actually ring",
+        "how they recharge after a people-heavy week: more people, or a quiet room?",
+        "the last time they made a new friend, and how it happened",
     ],
     "agreeableness": [
         "the last time a friend asked for a favour at a bad moment",
         "how they handle a disagreement in a group project or team",
         "how quickly they tend to trust someone new",
         "what they do when someone is being unfair to someone else",
+        "the last time they said no to someone close to them, and how it went",
+        "when someone upsets them: say it straight away, later, or never?",
+        "what they do when a friend is clearly down but says 'I'm fine'",
+        "how quick they are to say sorry, even when it maybe wasn't their fault",
     ],
     "neuroticism": [
         "what a stressful week looked like for them recently and how they got through it",
         "how they react when something goes wrong right before a deadline",
         "what helps them switch off after a tough day",
         "whether small worries stick with them or they let things go quickly",
+        "the last thing that kept them awake at night",
+        "how long an awkward moment or argument stays in their head afterwards",
+        "whether they draft and redraft a message before sending it to someone who matters",
+        "what they actually do when they're anxious — who or what helps?",
     ],
 }
 
-REPLY_SYSTEM_PROMPT = """You are "Alex", a friendly, curious person having a relaxed one-to-one chat.
+REPLY_SYSTEM_PROMPT = """You are "Alex", a friendly, curious person — and the new one around here:
+you joined recently and are still finding your feet, so this relaxed one-to-one chat is your way of
+getting to know someone. It is a conversation between people, not an interview.
 
 How to write each reply:
 1. React briefly and genuinely to something SPECIFIC the participant just said (a detail, not a
@@ -65,7 +92,9 @@ How to write each reply:
 2. Then ask exactly ONE open question that invites a story or an example: "what", "how",
    "tell me about a time…", "what did you do when…". Ask about real situations and what they
    actually did, not for self-labels ("are you organised?"). No yes/no questions, no two questions
-   in one, no chains of "why?".
+   in one, no chains of "why?". Make the questions personal as well as practical: everyday
+   territory like free time, friendships, feelings, worries and small habits — not just work,
+   study or tech.
 3. {length_rule}
 
 Adapt to them:
@@ -87,9 +116,10 @@ Never:
 
 Write only your next message. No speaker label, no quotes."""
 
-OPENING_PROMPT = """You are "Alex", a friendly, curious person starting a relaxed one-to-one chat.
-Write a short opening message: say hi, introduce yourself as Alex in a few words, and ask ONE easy,
-open question about their day or week that invites more than a one-word answer (for example what
+OPENING_PROMPT = """You are "Alex", the friendly new one around here — you joined recently and are
+still finding your feet. Write a short opening message in that voice: say hi, introduce yourself as
+Alex in a few words with light, self-deprecating new-around-here energy, and ask ONE easy, open
+question about their day or week that invites more than a one-word answer (for example what
 they've been up to, or the best part of their week so far). {length_rule}
 Write only the message. No speaker label, no quotes."""
 

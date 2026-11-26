@@ -154,6 +154,49 @@ def test_beta_confidence_drops_with_contradiction():
     )
 
 
+# ----------------------------------------------------------------- conversation persona
+@pytest.mark.asyncio
+async def test_alex_opens_as_the_new_colleague_and_asks_personal_questions():
+    """The chat persona is the friendly new one around here; the reply prompt asks for everyday
+    personal topics (not just work/tech) while keeping the sensitive-topic bans; and every trait
+    has a broadened angle bank."""
+    from attack_agent.engine.conversation import TRAIT_ANGLES, ConversationEngine
+    from attack_agent.engine.llm import RoleClient
+
+    class CapturingProvider(FakeProvider):
+        prompts: list[str] = []
+
+        async def chat_text(self, model, messages, temperature):
+            self.prompts.append(" ".join(m["content"] for m in messages))
+            return await super().chat_text(model, messages, temperature)
+
+    node = CapturingProvider("fake")
+    roles = {r: [Route("fake", "m")] for r in
+             ["agent", "extractor", "twin", "judge", "sim_participant"]}
+    router = Router({"fake": node}, roles, Settings(health_cache_seconds=0))
+    conv = ConversationEngine(RoleClient(router, "agent"))
+    state = AgentState(session_id="s")
+    state.init_traits()
+    state.conversation_history = [
+        {"role": "assistant", "content": "Hey! How's your day going?"},
+        {"role": "user", "content": "pretty good, just busy with classes"},
+    ]
+
+    await conv.generate_opening("desktop")
+    opening_prompt = node.prompts[0].lower()
+    assert "new one around here" in opening_prompt  # friendly new-joiner, not a study assistant
+    assert "still finding your feet" in opening_prompt
+
+    await conv.generate_reply(state)
+    reply_prompt = " ".join(node.prompts[1].lower().split())
+    assert "friendships, feelings" in reply_prompt  # personal topics, not just work/tech
+    assert "not just work, study or tech" in reply_prompt
+    assert "health or diagnoses" in reply_prompt  # sensitive-topic bans stay in force
+
+    for trait, angles in TRAIT_ANGLES.items():
+        assert len(angles) >= 8, trait  # broadened bank: personal + practical angles
+
+
 # ----------------------------------------------------------------- full session
 def _router() -> Router:
     node = FakeProvider("fake")

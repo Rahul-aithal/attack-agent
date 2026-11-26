@@ -86,14 +86,14 @@ export function Participant() {
           <div className="text-sm text-slate-300 space-y-3">
             <p>This is a <b>controlled academic research simulation</b> (Final Year Project).</p>
             <ul className="list-disc pl-5 space-y-1">
-              <li>We chat casually; the conversation is analysed to estimate personality traits.</li>
+              <li>We chat casually — including everyday personal topics (free time, friendships, feelings, how you handle stress); the conversation is analysed to estimate personality traits.</li>
               <li>A <b>harmless simulated request</b> may be made of you — see the question below.</li>
               <li>A short personality questionnaire comes afterwards.</li>
               <li>You can stop at any time. All data stays on the study's local machines.</li>
             </ul>
             <label className="flex gap-2 items-start cursor-pointer">
               <input type="checkbox" checked={agreeStudy} onChange={(e) => setAgreeStudy(e.target.checked)} className="mt-0.5 w-4 h-4 shrink-0 accent-teal-500" />
-              <span>I consent to take part in this study: my (pseudonymous) conversation will be analysed to estimate personality traits, and a short questionnaire follows.</span>
+              <span>I consent to take part in this study: we'll have a casual chat that may include everyday personal topics (free time, friendships, feelings, how you handle stress), my (pseudonymous) conversation will be analysed to estimate personality traits, and a short questionnaire follows.</span>
             </label>
             <label className="flex gap-2 items-start cursor-pointer">
               <input type="checkbox" checked={agreeRequest} onChange={(e) => setAgreeRequest(e.target.checked)} className="mt-0.5 w-4 h-4 shrink-0 accent-teal-500" />

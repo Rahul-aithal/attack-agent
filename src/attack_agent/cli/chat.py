@@ -22,7 +22,8 @@ BANNER = "[bold magenta]ATTACK AGENT[/bold magenta] — Conversational Profiling
 
 CONSENT = """[bold yellow]ETHICS & CONSENT NOTICE[/bold yellow]
 This is a [bold]controlled academic research simulation[/bold] (Final Year Project).
-- The conversation is analysed to build a personality profile.
+- The chat is casual but personal — everyday topics like free time, friendships, feelings and how you
+  handle stress — and it is analysed to build a personality profile.
 - At some point a [bold]harmless simulated request[/bold] may be made of you — as a message from a new simulated
   contact (e.g., "IT Support") or from the agent itself. No real credentials, links, or payments are involved.
 - A short personality questionnaire is given afterwards.
