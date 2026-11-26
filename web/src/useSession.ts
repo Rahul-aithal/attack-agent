@@ -24,11 +24,13 @@ export interface SessionState {
   awaitQuestionnaire: boolean;
   selfReport?: Record<string, number>;
   error?: string;
+  plan?: { turn: number; focus: string[]; auto_focus: string[]; note?: string | null; steered: boolean };
+  interventions: { type: string; turn: number; phase: string; at: string; focus?: string[] | null; note?: string | null }[];
 }
 
 const initial: SessionState = {
   phase: "", chat: [], streaming: "", traits: {}, stability: 0, avgConfidence: 0,
-  convergence: [], evidence: [], trace: [], awaitQuestionnaire: false,
+  convergence: [], evidence: [], trace: [], awaitQuestionnaire: false, interventions: [],
 };
 
 export function useSession() {
@@ -42,10 +44,18 @@ export function useSession() {
       switch (e.type) {
         case "phase_change":
           ns.phase = e.phase;
+          ns.awaiting = undefined; // a new phase always starts with the agent working
           ns.trace = [...s.trace, `→ phase: ${e.phase}`];
           break;
         case "agent_token":
           ns.streaming = s.streaming + e.token;
+          break;
+        case "agent_plan":
+          ns.plan = { turn: e.turn, focus: e.focus, auto_focus: e.auto_focus, note: e.note, steered: e.steered };
+          break;
+        case "intervention":
+          ns.interventions = [...s.interventions, e as any];
+          ns.trace = [...s.trace, `researcher: ${e.type}${e.focus ? ` → ${e.focus.join(", ")}` : ""}${e.note ? ` (“${e.note}”)` : ""}`];
           break;
         case "participant_message":
           ns.chat = [...s.chat, { who: "participant", text: e.text }];
@@ -127,8 +137,11 @@ export function useSession() {
 
   const sendQuestionnaire = useCallback((r: Record<number, number>) => sockRef.current?.questionnaire(r), []);
   const abort = useCallback(() => sockRef.current?.abort(), []);
+  const sendProgress = useCallback((answered: number) => sockRef.current?.progress(answered), []);
+  const steer = useCallback((focus: string[] | null, note: string | null) => sockRef.current?.steer(focus, note) ?? false, []);
+  const finishProfiling = useCallback(() => sockRef.current?.finishProfiling() ?? false, []);
   const disconnect = useCallback(() => { sockRef.current?.close(); sockRef.current = null; }, []);
   const reset = useCallback(() => setState(initial), []);
 
-  return { state, conn, connect, disconnect, sendMessage, sendQuestionnaire, abort, reset };
+  return { state, conn, connect, disconnect, sendMessage, sendQuestionnaire, sendProgress, steer, finishProfiling, abort, reset };
 }

@@ -9,8 +9,8 @@ export function Panel({ title, children, className = "" }: { title?: string; chi
   );
 }
 
-export function Button({ children, onClick, variant = "primary", disabled, type = "button" }: {
-  children: React.ReactNode; onClick?: () => void; variant?: "primary" | "ghost" | "danger"; disabled?: boolean; type?: "button" | "submit";
+export function Button({ children, onClick, variant = "primary", disabled, type = "button", className = "" }: {
+  children: React.ReactNode; onClick?: () => void; variant?: "primary" | "ghost" | "danger"; disabled?: boolean; type?: "button" | "submit"; className?: string;
 }) {
   const styles = {
     primary: "bg-accent hover:bg-blue-500 text-white",
@@ -19,14 +19,14 @@ export function Button({ children, onClick, variant = "primary", disabled, type 
   }[variant];
   return (
     <button type={type} onClick={onClick} disabled={disabled}
-      className={`px-4 py-2 rounded-lg text-sm font-medium transition ${styles} disabled:opacity-40 disabled:cursor-not-allowed`}>
+      className={`px-4 py-2.5 sm:py-2 rounded-lg text-sm font-medium transition whitespace-nowrap ${styles} disabled:opacity-40 disabled:cursor-not-allowed ${className}`}>
       {children}
     </button>
   );
 }
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={`bg-ink border border-line rounded-lg px-3 py-2 text-sm w-full outline-none focus:border-accent ${props.className || ""}`} />;
+  return <input {...props} className={`bg-ink border border-line rounded-lg px-3 py-2.5 sm:py-2 text-base sm:text-sm w-full outline-none focus:border-accent ${props.className || ""}`} />;
 }
 
 export function Badge({ children, color = "slate" }: { children: React.ReactNode; color?: string }) {

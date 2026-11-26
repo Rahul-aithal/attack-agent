@@ -63,6 +63,7 @@ class LLMCallRecord:
     parse_ok: bool | None = None
     error: str | None = None
     session_id: str | None = None
+    call_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict:
@@ -88,6 +89,10 @@ class Router:
         self._health: dict[str, tuple[bool, float]] = {}
         self.calls: list[LLMCallRecord] = []
         self._sinks: list[Callable[[LLMCallRecord], None]] = []
+        # Called when a call to a node *starts* (live "now running" view); same call_id as the
+        # LLMCallRecord delivered to on_call sinks when it finishes.
+        self._start_sinks: list[Callable[[dict], None]] = []
+        self._call_seq = 0
 
     # ------------------------------------------------------------------ construction
     @classmethod
@@ -191,8 +196,38 @@ class Router:
             raise RoutingError(f"no route configured for role '{role}'")
         return routes
 
+    def on_call_start(self, sink: Callable[[dict], None]) -> None:
+        self._start_sinks.append(sink)
+
+    def _begin(self, role: str, route: Route, kind: str) -> tuple[float, str]:
+        self._call_seq += 1
+        call_id = f"c{self._call_seq}"
+        info = {
+            "call_id": call_id,
+            "role": role,
+            "node": route.node,
+            "model": route.model,
+            "kind": kind,
+            "session_id": current_session_id.get(),
+            "started_at": datetime.now(UTC).isoformat(),
+        }
+        for sink in self._start_sinks:
+            try:
+                sink(info)
+            except Exception as exc:  # monitoring must never break a call
+                logger.debug("llm_call start sink failed: {}", exc)
+        return time.monotonic(), call_id
+
     def _record(
-        self, role: str, route: Route, kind: str, start: float, ok: bool, parse_ok, error
+        self,
+        role: str,
+        route: Route,
+        kind: str,
+        start: float,
+        ok: bool,
+        parse_ok,
+        error,
+        call_id: str | None = None,
     ) -> None:
         record = LLMCallRecord(
             role=role,
@@ -204,6 +239,7 @@ class Router:
             parse_ok=parse_ok,
             error=error,
             session_id=current_session_id.get(),
+            call_id=call_id,
         )
         self.calls.append(record)
         for sink in self._sinks:
@@ -221,15 +257,15 @@ class Router:
             if not await self.node_healthy(route.node):
                 continue
             provider = self.nodes[route.node]
-            start = time.monotonic()
+            start, call_id = self._begin(role, route, "text")
             try:
                 text = await provider.chat_text(route.model, messages, temp)
-                self._record(role, route, "text", start, True, None, None)
+                self._record(role, route, "text", start, True, None, None, call_id)
                 return text
             except Exception as exc:
                 last_error = exc
                 self._health[route.node] = (False, time.monotonic())
-                self._record(role, route, "text", start, False, None, str(exc)[:200])
+                self._record(role, route, "text", start, False, None, str(exc)[:200], call_id)
                 logger.warning("route {} failed for role {}: {}", route, role, exc)
         raise RoutingError(f"all routes failed for role '{role}': {last_error}")
 
@@ -246,18 +282,18 @@ class Router:
             if not await self.node_healthy(route.node):
                 continue
             provider = self.nodes[route.node]
-            start = time.monotonic()
+            start, call_id = self._begin(role, route, "json")
             try:
                 raw = await provider.chat_json(route.model, messages, temp, schema)
             except Exception as exc:
                 last_error = exc
                 self._health[route.node] = (False, time.monotonic())
-                self._record(role, route, "json", start, False, None, str(exc)[:200])
+                self._record(role, route, "json", start, False, None, str(exc)[:200], call_id)
                 continue
             data = extract_json(raw)
             if data is None:
                 data = await self._repair_json(provider, route, messages, raw, temp)
-            self._record(role, route, "json", start, True, data is not None, None)
+            self._record(role, route, "json", start, True, data is not None, None, call_id)
             return data
         raise RoutingError(f"all routes failed for role '{role}': {last_error}")
 
@@ -289,17 +325,17 @@ class Router:
             if not await self.node_healthy(route.node):
                 continue
             provider = self.nodes[route.node]
-            start = time.monotonic()
+            start, call_id = self._begin(role, route, "stream")
             produced = False
             try:
                 async for token in provider.stream(route.model, messages, temp):
                     produced = True
                     yield token
-                self._record(role, route, "stream", start, True, None, None)
+                self._record(role, route, "stream", start, True, None, None, call_id)
                 return
             except Exception as exc:
                 last_error = exc
-                self._record(role, route, "stream", start, False, None, str(exc)[:200])
+                self._record(role, route, "stream", start, False, None, str(exc)[:200], call_id)
                 if produced:
                     # already emitted tokens downstream; cannot safely retry another route
                     raise

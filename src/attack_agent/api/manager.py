@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
+from collections import deque
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -22,7 +25,7 @@ JOIN_CODE_LENGTH = 6
 
 # Event types that reveal the live inferred profile; withheld from participant-facing streams so
 # the participant never sees their own profile mid-study (it would bias their behaviour).
-RESEARCHER_ONLY_EVENTS = {"trait_update", "profile", "twin_prediction"}
+RESEARCHER_ONLY_EVENTS = {"trait_update", "profile", "twin_prediction", "agent_plan", "intervention"}
 
 
 @dataclass
@@ -49,12 +52,76 @@ class SessionManager:
         self._join_codes: dict[str, str] = {}  # code -> session id
         self._participant_sockets: dict[str, int] = {}
         self._pending_aborts: dict[str, asyncio.Task] = {}
+        self._questionnaire_progress: dict[str, int] = {}
+        # Live monitoring for the dashboard: machine telemetry pushed by scripts/node_monitor.py,
+        # and every model call (in flight + recent + per-role totals).
+        self.machines: dict[str, dict] = {}
+        self._active_calls: dict[str, dict] = {}
+        self._recent_calls: deque[dict] = deque(maxlen=40)
+        self._call_totals: dict[str, dict] = {}
+        self.router.on_call_start(self._call_started)
         self.router.on_call(self._record_call)
 
     # ------------------------------------------------------------------ calls
     def _record_call(self, record: LLMCallRecord) -> None:
         if record.session_id:
             self._calls.setdefault(record.session_id, []).append(record)
+        started = self._active_calls.pop(record.call_id or "", None)
+        done = {
+            **(started or {}),
+            **record.to_dict(),
+            "join_code": self.join_code(record.session_id) if record.session_id else None,
+        }
+        self._recent_calls.appendleft(done)
+        key = f"{record.role}@{record.node}/{record.model}"
+        tot = self._call_totals.setdefault(
+            key,
+            {"role": record.role, "node": record.node, "model": record.model,
+             "calls": 0, "failed": 0, "total_ms": 0.0, "last_ms": 0.0},
+        )
+        tot["calls"] += 1
+        tot["failed"] += 0 if record.ok else 1
+        tot["total_ms"] += record.latency_ms
+        tot["last_ms"] = record.latency_ms
+        self._broadcast(self.llm_snapshot())
+
+    def _call_started(self, info: dict) -> None:
+        sid = info.get("session_id")
+        self._active_calls[info["call_id"]] = {
+            **info,
+            "join_code": self.join_code(sid) if sid else None,
+            "_t0": time.monotonic(),
+        }
+        self._broadcast(self.llm_snapshot())
+
+    def llm_snapshot(self) -> dict:
+        now = time.monotonic()
+        active = [
+            {**{k: v for k, v in c.items() if k != "_t0"}, "running_ms": round((now - c["_t0"]) * 1000)}
+            for c in self._active_calls.values()
+        ]
+        totals = [
+            {**t, "avg_ms": round(t["total_ms"] / t["calls"], 1) if t["calls"] else 0.0}
+            for t in self._call_totals.values()
+        ]
+        return {
+            "type": "llm",
+            "active": active,
+            "recent": [{k: v for k, v in c.items() if k != "_t0"} for c in self._recent_calls],
+            "totals": totals,
+        }
+
+    # ------------------------------------------------------------------ machine telemetry
+    def update_machine(self, name: str, data: dict) -> None:
+        self.machines[name] = {**data, "name": name, "received_at": datetime.now(UTC).isoformat()}
+        self._broadcast(self.machines_snapshot())
+
+    def machines_snapshot(self) -> dict:
+        return {"type": "machines", "machines": list(self.machines.values())}
+
+    def set_questionnaire_progress(self, session_id: str, answered: int) -> None:
+        self._questionnaire_progress[session_id] = max(0, int(answered))
+        self._broadcast_sessions()
 
     # ------------------------------------------------------------------ sessions
     def create_session(
@@ -137,12 +204,13 @@ class SessionManager:
     def admin_unsubscribe(self, queue: asyncio.Queue[dict]) -> None:
         self._admin_feeds.discard(queue)
 
-    def _broadcast_sessions(self) -> None:
-        if not self._admin_feeds:
-            return
-        message = {"type": "sessions", "sessions": self.list_sessions()}
+    def _broadcast(self, message: dict) -> None:
         for queue in list(self._admin_feeds):
             queue.put_nowait(message)
+
+    def _broadcast_sessions(self) -> None:
+        if self._admin_feeds:
+            self._broadcast({"type": "sessions", "sessions": self.list_sessions()})
 
     async def wait_persisted(self, session_id: str) -> None:
         """Block until the finished session has been written (so an export right after works)."""
@@ -176,7 +244,12 @@ class SessionManager:
                 meta.get("participant_id"),
                 meta.get("experiment_id"),
                 calls,
-                {**self._settings_snapshot(), **(meta.get("config") or {})},
+                {
+                    **self._settings_snapshot(),
+                    **(meta.get("config") or {}),
+                    "researcher_steered": bool(engine.state.interventions),
+                    "interventions": engine.state.interventions,
+                },
                 self.settings,
             )
         except Exception as exc:
@@ -222,6 +295,9 @@ class SessionManager:
         rows = []
         for sid, engine in self.sessions.items():
             state = engine.state
+            participant_msgs = sum(1 for t in state.turn_logs if t.speaker == "participant")
+            agent_msgs = sum(1 for t in state.turn_logs if t.speaker == "agent")
+            submitted = (state.questionnaire or {}).get("answered")
             rows.append(
                 {
                     "session_id": sid,
@@ -229,6 +305,17 @@ class SessionManager:
                     "participant_connected": bool(self._participant_sockets.get(sid)),
                     "phase": state.phase.value,
                     "turn_count": state.turn_count,
+                    "participant_messages": participant_msgs,
+                    "agent_messages": agent_msgs,
+                    "max_turns": self.settings.max_turns,
+                    "questionnaire_answered": (
+                        submitted
+                        if submitted is not None
+                        else self._questionnaire_progress.get(sid, 0)
+                    ),
+                    "questionnaire_submitted": submitted is not None,
+                    "questionnaire_total": 50,
+                    "interventions": len(state.interventions),
                     "finished": engine.finished,
                     "participant_id": self._meta.get(sid, {}).get("participant_id"),
                 }

@@ -33,6 +33,9 @@ export async function getQuestionnaire(): Promise<QItem[]> {
 export interface LiveSession {
   session_id: string; join_code: string | null; participant_connected: boolean;
   phase: string; turn_count: number; finished: boolean; participant_id?: string | null;
+  participant_messages: number; agent_messages: number; max_turns: number;
+  questionnaire_answered: number; questionnaire_submitted: boolean; questionnaire_total: number;
+  interventions: number;
 }
 
 export async function listSessions(token: string): Promise<LiveSession[]> {
@@ -134,6 +137,10 @@ export class SessionSocket extends ReconnectingSocket {
   message(text: string) { return this.send({ kind: "message", text }); }
   questionnaire(responses: Record<number, number>) { return this.send({ kind: "questionnaire", responses }); }
   abort() { return this.send({ kind: "abort" }); }
+  progress(answered: number) { return this.send({ kind: "questionnaire_progress", answered }); }
+  // researcher only (the server ignores these from participant sockets)
+  steer(focus: string[] | null, note: string | null) { return this.send({ kind: "steer", focus, note }); }
+  finishProfiling() { return this.send({ kind: "finish_profiling" }); }
 }
 
 /** Researcher feed: live session list + node health, pushed by the server. */

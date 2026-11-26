@@ -4,6 +4,8 @@ import type { ConnState, LiveSession } from "../api";
 import type { SessionState } from "../useSession";
 import { useSession } from "../useSession";
 import { Convergence, TraitRadar } from "./charts";
+import { MachinesPanel, ModelActivity } from "./Monitor";
+import { Steering, Transcript } from "./Steering";
 import { Badge, Button, Input, Panel } from "./ui";
 
 const ROLES = ["agent", "extractor", "twin", "judge", "sim_participant"];
@@ -57,6 +59,9 @@ function ActivityBar({ s }: { s: SessionState }) {
 function useAdminFeed(token: string) {
   const [sessions, setSessions] = useState<LiveSession[]>([]);
   const [nodes, setNodes] = useState<any[]>([]);
+  const [machines, setMachines] = useState<any[]>([]);
+  const [llm, setLlm] = useState<{ active: any[]; recent: any[]; totals: any[] }>({ active: [], recent: [], totals: [] });
+  const seen = useRef<Record<string, { at: string; rx: number }>>({});
   const [conn, setConn] = useState<ConnState>("closed");
   const [denied, setDenied] = useState(false);
   const sock = useRef<AdminSocket | null>(null);
@@ -68,13 +73,25 @@ function useAdminFeed(token: string) {
       onEvent: (e) => {
         if (e.type === "sessions") setSessions(e.sessions);
         else if (e.type === "nodes") setNodes(e.nodes);
+        else if (e.type === "machines") {
+          const rx = Date.now();
+          setMachines(e.machines.map((m: any) => {
+            const prev = seen.current[m.name];
+            if (!prev || prev.at !== m.received_at) seen.current[m.name] = { at: m.received_at, rx };
+            return { ...m, _rx: seen.current[m.name].rx };
+          }));
+        }
+        else if (e.type === "llm") {
+          const rx = Date.now();
+          setLlm({ ...e, active: e.active.map((c: any) => ({ ...c, _rx: rx })) } as any);
+        }
         else if (e.type === "error") { setDenied(true); s.close(); }
       },
     });
     sock.current = s;
     return () => s.close();
   }, [token]);
-  return { sessions, nodes, conn, denied };
+  return { sessions, nodes, machines, llm, conn, denied };
 }
 
 function LiveSessions({ rows, denied, onAttach }: { rows: LiveSession[]; denied: boolean; onAttach: (id: string, code?: string | null) => void }) {
@@ -83,10 +100,12 @@ function LiveSessions({ rows, denied, onAttach }: { rows: LiveSession[]; denied:
   return (
     <div className="space-y-1">
       {rows.map((r) => (
-        <div key={r.session_id} className="flex items-center gap-2 text-sm border-b border-line/60 py-1">
+        <div key={r.session_id} className="flex items-center gap-x-2 gap-y-1 flex-wrap text-sm border-b border-line/60 py-1.5">
           <span className="font-mono text-xs tracking-widest">{r.join_code ?? r.session_id.slice(-6)}</span>
           <Badge color={r.finished ? "slate" : "green"}>{r.finished ? "done" : r.phase}</Badge>
-          <span className="text-xs text-slate-500">turn {r.turn_count}</span>
+          <span className="text-xs text-slate-400" title="participant chat replies / max">💬 {r.participant_messages}/{r.max_turns}</span>
+          {r.interventions > 0 && <Badge color="amber">steered ×{r.interventions}</Badge>}
+          <span className={`text-xs ${r.questionnaire_submitted ? "text-emerald-400" : "text-slate-400"}`} title="questionnaire answered">📝 {r.questionnaire_answered}/{r.questionnaire_total}</span>
           {!r.finished && (
             <span className={`text-xs ${r.participant_connected ? "text-emerald-400" : "text-slate-500"}`}>
               {r.participant_connected ? "● participant online" : "○ waiting for participant"}
@@ -95,6 +114,16 @@ function LiveSessions({ rows, denied, onAttach }: { rows: LiveSession[]; denied:
           <span className="ml-auto"><Button variant="ghost" onClick={() => onAttach(r.session_id, r.join_code)}>Watch</Button></span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-lg border border-line bg-panel px-2 py-2">
+      <div className="text-lg font-semibold font-mono">{value}</div>
+      <div className="text-[11px] text-slate-400">{label}</div>
+      {sub && <div className="text-[10px] text-slate-500">{sub}</div>}
     </div>
   );
 }
@@ -117,7 +146,7 @@ function JoinCard({ code }: { code: string }) {
 }
 
 export function Researcher() {
-  const { state, connect, disconnect, reset } = useSession();
+  const { state, connect, disconnect, reset, steer, finishProfiling } = useSession();
   const [token, setToken] = useState(localStorage.getItem("adminToken") || "");
   const [sessionId, setSessionId] = useState(new URLSearchParams(location.search).get("session") || "");
   const [attached, setAttached] = useState(false);
@@ -170,7 +199,8 @@ export function Researcher() {
 
   if (!attached) {
     return (
-      <div className="max-w-xl mx-auto mt-10 space-y-4">
+      <div className="max-w-6xl mx-auto mt-4 sm:mt-8 grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 space-y-4">
         <Panel title="Researcher / presenter access">
           <label className="text-xs text-slate-400">Admin token</label>
           <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="printed in server logs at startup" className="mt-1 mb-3" />
@@ -188,6 +218,11 @@ export function Researcher() {
             <Button onClick={() => sessionId && attach(sessionId)} disabled={!token || !sessionId}>Attach</Button>
           </div>
         </Panel>
+        {token && !feed.denied && <ModelActivity llm={feed.llm} />}
+        </div>
+        <div className="space-y-4">
+          {token && !feed.denied && <MachinesPanel machines={feed.machines} />}
+        </div>
       </div>
     );
   }
@@ -195,7 +230,7 @@ export function Researcher() {
   return (
     <div className="max-w-6xl mx-auto mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
       <div className="lg:col-span-2 space-y-4">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Badge color="blue">session {joinCode ?? watched?.join_code ?? sessionId.slice(-6)}</Badge>
           {watched && !watched.finished && (
             <Badge color={watched.participant_connected ? "green" : "red"}>
@@ -212,6 +247,17 @@ export function Researcher() {
           <JoinCard code={(joinCode ?? watched?.join_code)!} />
         )}
         <ActivityBar s={state} />
+        {watched && (
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <Stat label="participant replies" value={`${watched.participant_messages}`} sub={`profiling ends by ${watched.max_turns}`} />
+            <Stat label="agent messages" value={`${watched.agent_messages}`} />
+            <Stat label="questionnaire" value={`${watched.questionnaire_answered}/${watched.questionnaire_total}`}
+              sub={watched.questionnaire_submitted ? "submitted" : state.phase === "questionnaire" ? "in progress" : "not started"} />
+          </div>
+        )}
+        <Transcript s={state} />
+        <Steering s={state} steer={steer} finishProfiling={finishProfiling} />
+        <ModelActivity llm={feed.llm} sessionFilter={sessionId} />
         <Panel title="Big Five — inferred vs self-report">
           <TraitRadar traits={state.traits} selfReport={state.selfReport} />
         </Panel>
@@ -270,6 +316,8 @@ export function Researcher() {
             {nodes.length === 0 && <div className="text-slate-500">no nodes / unauthorized</div>}
           </div>
         </Panel>
+
+        <MachinesPanel machines={feed.machines} />
 
         <Settings token={token} onChange={refreshNodes} />
         <Experiments token={token} experiments={experiments} onChange={refreshExp} />

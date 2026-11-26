@@ -229,3 +229,32 @@ def test_session_settings_reach_the_react_loop(tmp_path):
     assert isinstance(engine.loop.profiler, V1Profiler)
     assert engine.loop.signal_extractor.settings.extractor_mode == "keyword"
     assert engine.loop.validator.settings.max_turns == 3
+
+
+@pytest.mark.asyncio
+async def test_researcher_steering_is_applied_once_and_logged(tmp_path):
+    engine = _fake_engine(tmp_path, stopping_rule=False)
+    engine.settings.max_turns = 10
+    plans = []
+    finished_early = False
+    async for event in engine.events():
+        t = event["type"]
+        if t == "agent_plan":
+            plans.append(event)
+        elif t == "await_message" and event["context"] == "profiling":
+            if engine.state.turn_count == 0:
+                engine.steer(focus=["neuroticism"], note="ask about exam stress")
+            elif engine.state.turn_count == 2:
+                engine.finish_profiling()
+                finished_early = True
+            engine.submit_message("I plan ahead and love helping people")
+        elif t == "await_message":
+            engine.submit_message("ok")
+        elif t == "await_questionnaire":
+            engine.submit_questionnaire({i: 3 for i in range(1, 51)})
+    assert finished_early
+    assert plans[0]["steered"] and plans[0]["focus"] == ["neuroticism"]
+    assert plans[0]["note"] == "ask about exam stress"
+    assert not plans[1]["steered"]  # one-shot
+    assert engine.state.turn_count < 10  # ended early, before max_turns
+    assert [i["type"] for i in engine.state.interventions] == ["steer", "finish_profiling"]

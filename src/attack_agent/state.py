@@ -39,6 +39,9 @@ class AgentState(BaseModel):
     self_report_scores: dict[str, float] = Field(default_factory=dict)
     consent_given: bool = False
     aborted: bool = False
+    # Researcher steering (focus a trait, one-off instruction, end profiling early). Logged so
+    # steered sessions can be flagged or excluded in the analysis.
+    interventions: list[dict] = Field(default_factory=list)
 
     def init_traits(self) -> None:
         if not self.trait_estimates:

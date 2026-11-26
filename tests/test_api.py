@@ -165,3 +165,47 @@ def test_participant_who_never_returns_is_aborted(client):
             break
         time.sleep(0.1)
     assert c.get(f"/sessions/{sid}").json()["aborted"] is True
+
+
+def test_telemetry_and_model_activity_reach_the_admin_feed(client):
+    c, _ = client
+    assert c.post("/telemetry", json={"name": "windows"}).status_code == 401
+    with c.websocket_connect("/admin/stream?admin_token=tok") as feed:
+        kinds = {feed.receive_json()["type"] for _ in range(3)}
+        assert kinds == {"sessions", "machines", "llm"}
+        ok = c.post("/telemetry", json={"name": "windows", "cpu_pct": 42.0},
+                    headers={"X-Admin-Token": "tok"})
+        assert ok.status_code == 200
+        for _ in range(20):
+            msg = feed.receive_json()
+            if msg["type"] == "machines":
+                assert msg["machines"][0]["name"] == "windows"
+                assert msg["machines"][0]["cpu_pct"] == 42.0
+                break
+        else:
+            raise AssertionError("no machines update")
+
+        sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
+        saw_active = saw_done = False
+        for _ in range(100):
+            msg = feed.receive_json()
+            if msg["type"] == "llm":
+                saw_active |= any(a["session_id"] == sid for a in msg["active"])
+                saw_done |= any(r["session_id"] == sid and r["latency_ms"] >= 0
+                                for r in msg["recent"])
+            if saw_active and saw_done:
+                break
+        assert saw_active and saw_done  # opening message: call started, then finished
+
+
+def test_session_list_counts_answers(client):
+    c, _ = client
+    sid = c.post("/sessions", json={"consent": True}).json()["session_id"]
+    with c.websocket_connect(f"/sessions/{sid}/stream") as ws:
+        _until(ws, "await_message")
+        ws.send_json({"kind": "message", "text": "I plan ahead and love helping people"})
+        _until(ws, "await_message")
+        rows = {r["session_id"]: r for r in c.app.state.manager.list_sessions()}
+        assert rows[sid]["participant_messages"] == 1
+        assert rows[sid]["agent_messages"] == 2  # opening + reply
+        assert rows[sid]["questionnaire_total"] == 50

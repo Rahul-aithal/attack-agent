@@ -190,6 +190,18 @@ def create_app() -> FastAPI:
     async def nodes():
         return {"nodes": await app.state.manager.nodes_status()}
 
+    @app.post("/telemetry", dependencies=[Depends(require_admin)])
+    async def telemetry(report: dict):
+        """Machine stats pushed by scripts/node_monitor.py running on each laptop."""
+        name = str(report.get("name") or report.get("hostname") or "unknown")[:40]
+        app.state.manager.update_machine(name, report)
+        return {"ok": True}
+
+    @app.get("/telemetry", dependencies=[Depends(require_admin)])
+    async def telemetry_snapshot():
+        mgr: SessionManager = app.state.manager
+        return {"machines": list(mgr.machines.values()), "llm": mgr.llm_snapshot()}
+
     @app.put("/routing", dependencies=[Depends(require_admin)])
     async def routing(req: RoutingRequest):
         if req.role not in ROLES:
@@ -242,6 +254,12 @@ def create_app() -> FastAPI:
                     engine.submit_questionnaire(data.get("responses", {}))
                 elif kind == "abort":  # explicit "Quit"
                     engine.abort()
+                elif kind == "steer" and include_profile:  # researcher only
+                    engine.steer(data.get("focus"), data.get("note"))
+                elif kind == "finish_profiling" and include_profile:
+                    engine.finish_profiling()
+                elif kind == "questionnaire_progress" and is_participant:
+                    mgr.set_questionnaire_progress(session_id, data.get("answered", 0))
 
         async def pump_events():
             # A (re)joining client first receives the whole history, then live events.
@@ -302,6 +320,8 @@ def create_app() -> FastAPI:
         client_task = asyncio.create_task(drain_client())
         try:
             await websocket.send_json({"type": "sessions", "sessions": mgr.list_sessions()})
+            await websocket.send_json(mgr.machines_snapshot())
+            await websocket.send_json(mgr.llm_snapshot())
             while True:
                 getter = asyncio.create_task(queue.get())
                 done, _ = await asyncio.wait(

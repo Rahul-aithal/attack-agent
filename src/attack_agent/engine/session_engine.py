@@ -32,7 +32,7 @@ from attack_agent.engine.twin import DigitalTwin
 from attack_agent.io.twin_reader import read_twin_prediction
 from attack_agent.io.twin_writer import write_twin_data
 from attack_agent.react.loop import ReActLoop
-from attack_agent.schemas import Outcome, Phase, TurnLog
+from attack_agent.schemas import ALL_TRAITS, Outcome, Phase, TurnLog
 from attack_agent.state import AgentState
 
 DONE = object()  # sentinel pushed to every subscriber when the session finishes
@@ -60,6 +60,8 @@ class SessionEngine:
         # Events fan out to every subscriber (participant socket, researcher dashboard, CLI);
         # a late subscriber first receives the full history so it can rebuild the view.
         self._history: list[Any] = []
+        self._steer: dict | None = None
+        self._finish_requested = False
         self._subscribers: list[asyncio.Queue[Any]] = []
         self._input: asyncio.Queue[dict] = asyncio.Queue()
         self._task: asyncio.Task | None = None
@@ -105,6 +107,35 @@ class SessionEngine:
     def abort(self) -> None:
         self._aborted = True
         self._input.put_nowait({"kind": "abort"})
+
+    # ------------------------------------------------------------------ researcher steering
+    def steer(self, focus: list[str] | None = None, note: str | None = None) -> None:
+        """Override the topic focus and/or add an instruction for the agent's NEXT reply only."""
+        focus = [t for t in (focus or []) if t in ALL_TRAITS] or None
+        note = (note or "").strip()[:300] or None
+        if not focus and not note:
+            return
+        self._steer = {"focus": focus, "note": note}
+        self._log_intervention("steer", focus=focus, note=note)
+
+    def finish_profiling(self) -> None:
+        """End the profiling chat now and move on to the twin + scenario."""
+        if self.state.phase != Phase.PROFILING or self._finish_requested:
+            return
+        self._finish_requested = True
+        self._log_intervention("finish_profiling")
+        self._input.put_nowait({"kind": "finish_profiling"})
+
+    def _log_intervention(self, kind: str, **data: Any) -> None:
+        entry = {
+            "type": kind,
+            "turn": self.state.turn_count,
+            "phase": self.state.phase.value,
+            "at": datetime.now(UTC).isoformat(),
+            **data,
+        }
+        self.state.interventions.append(entry)
+        self._publish({"type": "intervention", "session_id": self.session_id, **entry})
 
     async def wait(self) -> AgentState:
         if self._task is not None:
@@ -174,6 +205,8 @@ class SessionEngine:
             msg = await self._next_input()
             if self._is_abort(msg):
                 return await self._do_abort()
+            if msg["kind"] == "finish_profiling":
+                break
             if msg["kind"] != "message":
                 continue
             text = msg["text"].strip()
@@ -182,7 +215,7 @@ class SessionEngine:
             await self._emit("participant_message", text=text)
             complete = await self._process_profiling_turn(text)
             await self._profile_event()
-            if complete and self.settings.stopping_rule:
+            if (complete and self.settings.stopping_rule) or self._finish_requested:
                 break
             if self.state.turn_count >= self.settings.max_turns:
                 break
@@ -284,8 +317,10 @@ class SessionEngine:
 
         # On the last profiling turn the scenario comes next, so don't ask a question that the
         # participant will never get an answer to.
-        last_turn = (complete and self.settings.stopping_rule) or (
-            state.turn_count >= self.settings.max_turns
+        last_turn = (
+            (complete and self.settings.stopping_rule)
+            or state.turn_count >= self.settings.max_turns
+            or self._finish_requested
         )
         reply = None
         if not last_turn:
@@ -330,6 +365,8 @@ class SessionEngine:
         state.scenario_message = scenario
         self.loop.log_agent_turn(state, scenario, f"run_scenario:{principle.value}")
 
+        # Anything typed before the scenario message is shown is not a reply to it.
+        self._drop_stale_messages()
         max_exchanges = max(1, self.settings.scenario_max_exchanges)
         sim_history: list[dict[str, str]] = []
         final_eval = None
@@ -421,17 +458,39 @@ class SessionEngine:
     # ------------------------------------------------------------------ agent output
     async def _agent_reply(self, state: AgentState) -> str:
         """Generate the agent's reply, streaming tokens when the provider supports it."""
+        conv = self.loop.conversation
+        steer, self._steer = self._steer, None  # researcher overrides apply to one reply
+        auto_focus = conv.plan_focus(state)
+        focus = (steer or {}).get("focus") or auto_focus
+        note = (steer or {}).get("note")
+        await self._emit(
+            "agent_plan",
+            turn=state.turn_count,
+            focus=focus,
+            auto_focus=auto_focus,
+            note=note,
+            steered=bool(steer),
+        )
         parts: list[str] = []
         try:
-            async for token in self.loop.conversation.stream_reply(state):
+            async for token in conv.stream_reply(state, focus, note):
                 parts.append(token)
                 await self._emit("agent_token", token=token)
         except Exception as exc:
             logger.debug("stream unavailable, falling back to full reply: {}", exc)
             parts = []
-        text = "".join(parts) if parts else await self.loop.conversation.generate_reply(state)
+        text = "".join(parts) if parts else await conv.generate_reply(state, focus, note)
         await self._emit("agent_message", text=text)
         return text
+
+    def _drop_stale_messages(self) -> None:
+        kept = []
+        while not self._input.empty():
+            item = self._input.get_nowait()
+            if item.get("kind") != "message":
+                kept.append(item)
+        for item in kept:
+            self._input.put_nowait(item)
 
     def _is_abort(self, msg: dict) -> bool:
         return self._aborted or msg.get("kind") == "abort"

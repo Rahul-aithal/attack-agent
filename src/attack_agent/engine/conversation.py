@@ -19,7 +19,7 @@ Rules:
 - Adapt your tone and vocabulary to the participant's style.
 - Do not repeat questions you already asked.
 - This turn, naturally steer the topic toward: {focus}
-
+{note}
 Write your next message only. No quotes, no labels."""
 
 OPENING_PROMPT = """You are "Alex", a friendly conversational partner in a casual chat.
@@ -44,17 +44,28 @@ class ConversationEngine:
         focus = [name for _, name in uncertain[:2]]
         return focus
 
-    def _reply_messages(self, state: AgentState) -> list[dict[str, str]]:
-        focus = self._focus_traits(state)
-        hints = "; ".join(TRAIT_TOPIC_HINTS[t] for t in focus) if focus else (
+    def plan_focus(self, state: AgentState) -> list[str]:
+        """Traits the next reply will steer toward when nobody overrides it."""
+        return self._focus_traits(state)
+
+    def _reply_messages(
+        self, state: AgentState, focus: list[str] | None = None, note: str | None = None
+    ) -> list[dict[str, str]]:
+        focus = self._focus_traits(state) if focus is None else focus
+        hints = "; ".join(TRAIT_TOPIC_HINTS[t] for t in focus if t in TRAIT_TOPIC_HINTS) or (
             "whatever keeps the conversation flowing naturally"
         )
-        system = REPLY_SYSTEM_PROMPT.format(focus=hints)
+        extra = f"- Additional guidance for this reply: {note}\n" if note else ""
+        system = REPLY_SYSTEM_PROMPT.format(focus=hints, note=extra)
         return [{"role": "system", "content": system}] + state.conversation_history[-10:]
 
-    async def generate_reply(self, state: AgentState) -> str:
-        return await self.llm.chat_text(self._reply_messages(state))
+    async def generate_reply(
+        self, state: AgentState, focus: list[str] | None = None, note: str | None = None
+    ) -> str:
+        return await self.llm.chat_text(self._reply_messages(state, focus, note))
 
-    def stream_reply(self, state: AgentState):
+    def stream_reply(
+        self, state: AgentState, focus: list[str] | None = None, note: str | None = None
+    ):
         """Async iterator of reply tokens (for live token streaming to a UI)."""
-        return self.llm.stream(self._reply_messages(state))
+        return self.llm.stream(self._reply_messages(state, focus, note))
