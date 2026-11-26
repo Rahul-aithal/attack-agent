@@ -130,7 +130,8 @@ uv run node_monitor.py --server http://<server-ip>:8000 --token <admin token> --
 # Windows (PowerShell)
 iwr https://raw.githubusercontent.com/Rahul-aithal/attack-agent/main/scripts/node_monitor.py -OutFile node_monitor.py
 uv run node_monitor.py --server http://<server-ip>:8000 --token <admin token> --name windows
-``` Every 2 s it
+```
+Every 2 s it
 reports CPU, RAM, swap, battery, network, NVIDIA GPU utilisation / VRAM / temperature / power
 (via `nvidia-smi`) and the models Ollama has loaded (with how much sits in GPU memory).
 
