@@ -453,3 +453,23 @@ async def test_resume_mid_scenario_resends_it_and_finishes(tmp_path):
     # only the replies given after the resume count (nothing double-counted from before)
     assert resumed.state.turn_count == turns_before + len(sim_replies)
     assert sum(1 for t in resumed.state.turn_logs if t.agent_action.startswith("run_scenario:")) == 1
+
+
+@pytest.mark.asyncio
+async def test_profile_events_report_progress_to_the_twin(tmp_path):
+    engine = _fake_engine(tmp_path)
+    engine.settings.min_turns, engine.settings.max_turns = 4, 10
+    progress = []
+    async for event in engine.events():
+        if event["type"] == "profile":
+            progress.append(event["progress"])
+        elif event["type"] == "await_message":
+            engine.submit_message("I plan ahead and love helping people")
+        elif event["type"] == "await_questionnaire":
+            engine.submit_questionnaire({i: 3 for i in range(1, 51)})
+    first, last = progress[0], progress[-1]
+    assert set(first["checks"]) == {"turns", "traits_ready", "confidence", "stability"}
+    assert first["checks"]["turns"]["target"] == 4
+    assert 0 <= first["overall"] <= last["overall"] <= 1
+    assert first["expected_turns_left"] >= last["expected_turns_left"]
+    assert last["expected_seconds_left"] >= 0 and last["seconds_per_turn"] >= 0

@@ -7,6 +7,7 @@ import { Convergence, TraitRadar } from "./charts";
 import { MachinesPanel, ModelActivity } from "./Monitor";
 import { Memory, Steering, Transcript } from "./Steering";
 import { PreviousSessions } from "./History";
+import { PhaseStepper, ProfilingProgress, Tabs, roughTime } from "./SessionView";
 import { Badge, Button, Input, Panel } from "./ui";
 
 const ROLES = ["agent", "extractor", "twin", "judge", "sim_participant"];
@@ -106,6 +107,15 @@ function LiveSessions({ rows, denied, onAttach, token }: { rows: LiveSession[]; 
           <Badge color={r.finished ? "slate" : "green"}>{r.finished ? "done" : r.phase}</Badge>
           <span className="text-xs text-slate-400" title="participant chat replies / max">💬 {r.participant_messages}/{r.max_turns}</span>
           {r.interventions > 0 && <Badge color="amber">steered ×{r.interventions}</Badge>}
+          {r.progress && r.phase === "profiling" && (
+            <span className="flex items-center gap-1.5 text-xs text-slate-400" title="progress to the twin (expected time)">
+              <span className="w-16 h-1.5 rounded-full bg-ink overflow-hidden inline-block">
+                <span className="block h-full bg-accent" style={{ width: `${Math.round(r.progress.overall * 100)}%` }} />
+              </span>
+              {Math.round(r.progress.overall * 100)}%
+              {r.progress.expected_turns_left > 0 && <> · ~{r.progress.expected_turns_left} more, {roughTime(r.progress.expected_seconds_left)}</>}
+            </span>
+          )}
           <span className={`text-xs ${r.questionnaire_submitted ? "text-emerald-400" : "text-slate-400"}`} title="questionnaire answered">📝 {r.questionnaire_answered}/{r.questionnaire_total}</span>
           {!r.finished && (
             <span className={`text-xs ${r.participant_connected ? "text-emerald-400" : "text-slate-500"}`}>
@@ -235,155 +245,203 @@ export function Researcher() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const authed = !!token && !feed.denied;
+
   if (!attached) {
     return (
-      <div className="max-w-6xl mx-auto mt-4 sm:mt-8 grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 space-y-4">
-        <Panel title="Researcher / presenter access">
-          <label className="text-xs text-slate-400">Admin token</label>
-          <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="printed in server logs at startup" className="mt-1 mb-3" />
-          {token && !feed.denied && <div className="mb-3"><ReportLinks token={token} sessionId={null} label="Study report (saved sessions)" /></div>}
-          <div className="mb-3">
-            <Button onClick={newForParticipant} disabled={!token || feed.denied}>New session for a participant</Button>
-            <span className="text-xs text-slate-500 ml-2">gives you a join code to hand over</span>
+      <div className="max-w-6xl mx-auto mt-4 sm:mt-6 space-y-4">
+        {/* top bar: token + the two main actions */}
+        <div className="rounded-xl border border-line bg-panel px-4 py-3 flex flex-col lg:flex-row lg:items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <label className="text-xs text-slate-400">Admin token</label>
+            <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="printed in the server terminal at startup" className="mt-1" />
+            {feed.denied && <div className="text-xs text-rose-400 mt-1">Token not accepted — copy it again from the server terminal (it changes on restart unless fixed in .env).</div>}
           </div>
-          <label className="text-xs text-slate-400">
-            Live sessions {feed.conn === "open" ? <span className="text-emerald-400">● live</span> : token ? <span className="text-amber-400">○ connecting…</span> : null}
-          </label>
-          <div className="mt-1 mb-3">{token && <LiveSessions rows={feed.sessions} denied={feed.denied} onAttach={attach} token={token} />}</div>
-          <label className="text-xs text-slate-400">Or attach by session id</label>
-          <div className="flex gap-2 mt-1">
-            <Input value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="sess_…" />
-            <Button onClick={() => sessionId && attach(sessionId)} disabled={!token || !sessionId}>Attach</Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-xs ${feed.conn === "open" ? "text-emerald-400" : "text-slate-500"}`}>{feed.conn === "open" ? "● live" : token ? "○ connecting…" : ""}</span>
+            <Button onClick={newForParticipant} disabled={!authed}>+ New session</Button>
+            {authed && <ReportLinks token={token} sessionId={null} label="Study report" />}
           </div>
-        </Panel>
-        {token && !feed.denied && (
-          <PreviousSessions token={token} onOpen={attach}
-            refreshKey={feed.sessions.map((r) => `${r.session_id}:${r.phase}:${r.finished}`).join(",")} />
+        </div>
+
+        {authed && (
+          <Tabs tabs={[
+            {
+              key: "sessions", label: "Sessions", badge: feed.sessions.filter((r) => !r.finished).length,
+              content: (
+                <>
+                  <Panel title="Live now">
+                    <LiveSessions rows={feed.sessions} denied={feed.denied} onAttach={attach} token={token} />
+                  </Panel>
+                  <PreviousSessions token={token} onOpen={attach}
+                    refreshKey={feed.sessions.map((r) => `${r.session_id}:${r.phase}:${r.finished}`).join(",")} />
+                </>
+              ),
+            },
+            {
+              key: "system", label: "Machines & models",
+              badge: feed.nodes.filter((n) => !n.healthy || n.models_missing?.length).length || undefined,
+              content: (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-4"><NodeStatus nodes={feed.nodes} /><ModelActivity llm={feed.llm} /></div>
+                  <MachinesPanel machines={feed.machines} />
+                </div>
+              ),
+            },
+            {
+              key: "settings", label: "Settings",
+              content: (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <Settings token={token} onChange={refreshNodes} />
+                  <Experiments token={token} experiments={experiments} onChange={refreshExp} />
+                </div>
+              ),
+            },
+          ]} />
         )}
-        {token && !feed.denied && <ModelActivity llm={feed.llm} />}
-        </div>
-        <div className="space-y-4">
-          {token && !feed.denied && <NodeStatus nodes={feed.nodes} />}
-          {token && !feed.denied && <MachinesPanel machines={feed.machines} />}
-        </div>
       </div>
     );
   }
 
+  const code = joinCode ?? watched?.join_code ?? sessionId.slice(-6);
+  const waiting = watched?.phase === "waiting";
   return (
-    <div className="max-w-6xl mx-auto mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div className="lg:col-span-2 space-y-4">
+    <div className="max-w-6xl mx-auto mt-3 sm:mt-5 space-y-4">
+      {/* header: which session, who is connected, where it is */}
+      <div className="rounded-xl border border-line bg-panel px-4 py-3 space-y-3">
         <div className="flex items-center gap-2 flex-wrap">
-          <Badge color="blue">session {joinCode ?? watched?.join_code ?? sessionId.slice(-6)}</Badge>
+          <Button variant="ghost" className="!px-2.5" onClick={detach}>←</Button>
+          <span className="font-mono text-xl tracking-[0.25em]">{code}</span>
           {watched && !watched.finished && (
             <Badge color={watched.participant_connected ? "green" : "red"}>
-              {watched.participant_connected ? "participant online" : "participant offline"}
+              {watched.participant_connected ? "● participant online" : "○ participant offline"}
             </Badge>
           )}
-          <Button variant="ghost" onClick={detach}>← all sessions</Button>
-          {watched?.finished && <ReportLinks token={token} sessionId={sessionId} label="Report" />}
-          <Badge color="slate">phase: {state.phase || "—"}</Badge>
-          <Badge color="amber">stability {state.stability.toFixed(2)}</Badge>
-          <Badge color="amber">avg conf {state.avgConfidence.toFixed(2)}</Badge>
+          {watched?.device && <Badge color="slate">{watched.device}</Badge>}
+          {state.interventions.length > 0 && <Badge color="amber">steered ×{state.interventions.length}</Badge>}
+          <span className="ml-auto">{watched?.finished && <ReportLinks token={token} sessionId={sessionId} label="Report" />}</span>
         </div>
-        {/* hand-over card until the participant has joined and sent their first message */}
-        {(joinCode ?? watched?.join_code) && !watched?.participant_connected && (watched?.turn_count ?? 0) === 0 && (
-          <JoinCard code={(joinCode ?? watched?.join_code)!} />
-        )}
-        {watched?.phase === "waiting"
-          ? <div className="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-400">waiting for the participant to join — the session starts when they connect</div>
+        <PhaseStepper phase={waiting ? "" : state.phase} waiting={waiting} />
+        {waiting
+          ? <div className="text-sm text-slate-400">Waiting for the participant to join — the session starts when they connect.</div>
           : <ActivityBar s={state} />}
+      </div>
+
+      {code && !watched?.participant_connected && (watched?.turn_count ?? 0) === 0 && <JoinCard code={code} />}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2"><ProfilingProgress s={state} /></div>
         {watched && (
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <Stat label="participant replies" value={`${watched.participant_messages}`} sub={`profiling ends by ${watched.max_turns}`} />
+          <div className="grid grid-cols-3 lg:grid-cols-1 gap-2 text-center lg:text-left">
+            <Stat label="participant replies" value={`${watched.participant_messages}`} />
             <Stat label="agent messages" value={`${watched.agent_messages}`} />
             <Stat label="questionnaire" value={`${watched.questionnaire_answered}/${watched.questionnaire_total}`}
               sub={watched.questionnaire_submitted ? "submitted" : state.phase === "questionnaire" ? "in progress" : "not started"} />
           </div>
         )}
-        <Transcript s={state} />
-        <Steering s={state} steer={steer} finishProfiling={finishProfiling} />
-        <Memory s={state} />
-        <ModelActivity llm={feed.llm} sessionFilter={sessionId} />
-        <Panel title="Big Five — inferred vs self-report">
-          <TraitRadar traits={state.traits} selfReport={state.selfReport} />
-        </Panel>
-        <Panel title="Per-turn convergence">
-          {state.convergence.length > 1 ? <Convergence history={state.convergence} />
-            : <div className="text-sm text-slate-500 py-8 text-center">waiting for turns…</div>}
-        </Panel>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Panel title="Twin prediction vs outcome">
-            {state.twin ? (
-              <div className="text-sm space-y-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span>twin predicts: <b>{state.twin.predicted_outcome}</b></span>
-                  <span className="text-slate-500 text-xs">agreement {Math.round(state.twin.confidence * 100)}%</span>
-                  {state.twin.source && state.twin.source !== "model" && (
-                    <Badge color="red">⚠ {state.twin.source}: not a real prediction</Badge>
-                  )}
-                </div>
-                <div className="text-slate-400 text-xs">{state.twin.reasoning}</div>
-                {!!state.twin.samples?.length && (
-                  <details className="text-xs">
-                    <summary className="cursor-pointer text-slate-300">what the twin simulated ({state.twin.samples.length} runs)</summary>
-                    <div className="mt-1 space-y-2 max-h-56 overflow-y-auto">
-                      {state.twin.samples.map((x, i) => (
-                        <div key={i} className="border-l-2 border-line pl-2">
-                          <div className="text-slate-200 whitespace-pre-wrap">“{x.reply}”</div>
-                          <div className="text-slate-500">→ {x.outcome} ({x.confidence}){x.judged_by !== "model" && " · keyword rules"} — {x.reasoning}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                )}
-                {state.outcome && (
-                  <div className="mt-2 pt-2 border-t border-line space-y-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span>real outcome: <b>{state.outcome.real_outcome}</b></span>
-                      {state.outcome.match_flag == null
-                        ? <Badge color="slate">no match score</Badge>
-                        : <Badge color={state.outcome.match_flag ? "green" : "red"}>{state.outcome.match_flag ? "MATCH" : "MISS"}</Badge>}
-                      {state.outcome.judged_by === "rules" && <Badge color="amber">⚠ judged by keyword rules</Badge>}
-                    </div>
-                    {state.outcome.rationale && <div className="text-slate-400 text-xs">{state.outcome.rationale}</div>}
-                  </div>
-                )}
-              </div>
-            ) : state.phase === "twin_handoff"
-              ? <div className="text-sm text-amber-300 flex items-center gap-2"><span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />twin is running…</div>
-              : <div className="text-sm text-slate-500">starts after profiling (≥ 8 participant messages, or once confident)</div>}
-          </Panel>
-          <Panel title="ReAct trace">
-            <div className="text-xs font-mono text-slate-400 max-h-40 overflow-y-auto space-y-1">
-              {state.trace.slice(-20).map((t, i) => <div key={i}>{t}</div>)}
+      </div>
+
+      <Tabs tabs={[
+        {
+          key: "chat", label: "Conversation", badge: state.chat.length,
+          content: (
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+              <div className="lg:col-span-3 space-y-4"><Transcript s={state} /><Memory s={state} /></div>
+              <div className="lg:col-span-2 space-y-4"><Steering s={state} steer={steer} finishProfiling={finishProfiling} /></div>
             </div>
-          </Panel>
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        <Panel title="Evidence feed">
-          <div className="max-h-48 overflow-y-auto text-xs space-y-1">
-            {state.evidence.map((e, i) => (
-              <div key={i} className="flex justify-between border-b border-line/60 py-1">
-                <span className="text-slate-300">{e.trait}</span>
-                <span className={e.delta >= 0 ? "text-emerald-400" : "text-rose-400"}>{e.signal}</span>
-              </div>
-            ))}
-            {state.evidence.length === 0 && <div className="text-slate-500">no evidence yet</div>}
-          </div>
-        </Panel>
-
-        <NodeStatus nodes={nodes} />
-
-        <MachinesPanel machines={feed.machines} />
-
-        <Settings token={token} onChange={refreshNodes} />
-        <Experiments token={token} experiments={experiments} onChange={refreshExp} />
-      </div>
+          ),
+        },
+        {
+          key: "profile", label: "Personality",
+          content: (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <Panel title="Big Five — inferred vs self-report"><TraitRadar traits={state.traits} selfReport={state.selfReport} /></Panel>
+              <Panel title="How the scores settled, reply by reply">
+                {state.convergence.length > 1 ? <Convergence history={state.convergence} />
+                  : <div className="text-sm text-slate-500 py-8 text-center">appears after two replies</div>}
+              </Panel>
+              <Panel title="Evidence (latest first)" className="lg:col-span-2">
+                <div className="max-h-60 overflow-y-auto text-xs grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+                  {state.evidence.map((e, i) => (
+                    <div key={i} className="flex justify-between border-b border-line/60 py-1">
+                      <span className="text-slate-300 capitalize">{e.trait}</span>
+                      <span className={e.delta >= 0 ? "text-emerald-400" : "text-rose-400"}>{e.signal}</span>
+                    </div>
+                  ))}
+                  {state.evidence.length === 0 && <div className="text-slate-500">no evidence yet</div>}
+                </div>
+              </Panel>
+            </div>
+          ),
+        },
+        {
+          key: "twin", label: "Twin & outcome", badge: state.twin ? "✓" : undefined,
+          content: (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2"><TwinPanel s={state} /></div>
+              <Panel title="Decision trace">
+                <div className="text-xs font-mono text-slate-400 max-h-80 overflow-y-auto space-y-1">
+                  {state.trace.slice(-40).map((t, i) => <div key={i}>{t}</div>)}
+                </div>
+              </Panel>
+            </div>
+          ),
+        },
+        {
+          key: "system", label: "Models & machines",
+          content: (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="space-y-4"><ModelActivity llm={feed.llm} sessionFilter={sessionId} /><NodeStatus nodes={nodes} /></div>
+              <MachinesPanel machines={feed.machines} />
+            </div>
+          ),
+        },
+      ]} />
     </div>
+  );
+}
+
+function TwinPanel({ s }: { s: SessionState }) {
+  return (
+    <Panel title="Twin prediction vs real outcome">
+      {s.twin ? (
+        <div className="text-sm space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg border border-line p-3">
+              <div className="text-xs text-slate-400">Twin predicted</div>
+              <div className="text-lg font-semibold">{s.twin.predicted_outcome}</div>
+              <div className="text-xs text-slate-500">agreement {Math.round(s.twin.confidence * 100)}%</div>
+            </div>
+            <div className="rounded-lg border border-line p-3">
+              <div className="text-xs text-slate-400">Real outcome</div>
+              <div className="text-lg font-semibold">{s.outcome?.real_outcome ?? "…"}</div>
+              {s.outcome && (s.outcome.match_flag == null
+                ? <Badge color="slate">no match score</Badge>
+                : <Badge color={s.outcome.match_flag ? "green" : "red"}>{s.outcome.match_flag ? "MATCH" : "MISS"}</Badge>)}
+            </div>
+          </div>
+          {s.twin.source && s.twin.source !== "model" && <Badge color="red">⚠ {s.twin.source}: not a real prediction</Badge>}
+          {s.outcome?.judged_by === "rules" && <Badge color="amber">⚠ outcome judged by keyword rules</Badge>}
+          <div className="text-slate-400 text-xs">{s.twin.reasoning}</div>
+          {s.outcome?.rationale && <div className="text-slate-400 text-xs">Judge: {s.outcome.rationale}</div>}
+          {!!s.twin.samples?.length && (
+            <details className="text-xs" open>
+              <summary className="cursor-pointer text-slate-300">What the twin simulated ({s.twin.samples.length} runs)</summary>
+              <div className="mt-2 space-y-2">
+                {s.twin.samples.map((x, i) => (
+                  <div key={i} className="border-l-2 border-line pl-2">
+                    <div className="text-slate-200 whitespace-pre-wrap">“{x.reply}”</div>
+                    <div className="text-slate-500">→ {x.outcome} ({x.confidence}){x.judged_by !== "model" && " · keyword rules"} — {x.reasoning}</div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      ) : s.phase === "twin_handoff"
+        ? <div className="text-sm text-amber-300 flex items-center gap-2"><span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />twin is running…</div>
+        : <div className="text-sm text-slate-500">Starts when profiling finishes — see “Progress to the twin” above.</div>}
+    </Panel>
   );
 }
 

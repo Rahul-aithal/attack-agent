@@ -482,6 +482,11 @@ class SessionManager:
                     "questionnaire_submitted": submitted is not None,
                     "questionnaire_total": 50,
                     "interventions": len(state.interventions),
+                    "progress": (
+                        {k: engine.last_progress[k] for k in
+                         ("overall", "expected_turns_left", "expected_seconds_left")}
+                        if engine.last_progress else None
+                    ),
                     "device": state.device,
                     "finished": engine.finished,
                     "participant_id": self._meta.get(sid, {}).get("participant_id"),

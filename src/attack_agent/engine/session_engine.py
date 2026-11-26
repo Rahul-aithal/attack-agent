@@ -16,7 +16,9 @@ Event types emitted (each a dict with a ``type`` key):
 from __future__ import annotations
 
 import asyncio
+import math
 import re
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -81,6 +83,9 @@ class SessionEngine:
         self._steer: dict | None = None
         self._finish_requested = False
         self._abort_reason = "participant_quit"
+        self._conf_history: list[float] = []
+        self.last_progress: dict | None = None
+        self._turn_times: list[float] = []
         # A session rebuilt from a checkpoint (server restart, rejoin after a timeout) carries on
         # from its saved phase instead of starting over.
         self._resumed = state is not None and (
@@ -273,10 +278,79 @@ class SessionEngine:
             return {"kind": "abort"}
         return await self._input.get()
 
+    def _progress(self) -> dict:
+        """How close profiling is to handing over to the twin, condition by condition, plus an
+        *expected* number of turns and minutes left (a planning estimate, not a measurement)."""
+        st, cfg = self.state, self.settings
+        confs = [e.confidence for e in st.trait_estimates.values()]
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        ready = sum(1 for c in confs if c >= cfg.trait_confidence_threshold)
+        turns = st.turn_count
+
+        # confidence gained per turn recently -> turns still needed to reach the average target
+        hist = self._conf_history
+        if len(hist) >= 4:
+            gain = (hist[-1] - hist[-4]) / 3
+        else:
+            gain = hist[-1] / len(hist) if hist else 0.0
+        need_conf = max(0.0, cfg.avg_confidence_threshold - avg_conf)
+        if need_conf == 0:
+            conf_turns: int | None = 0
+        else:
+            conf_turns = math.ceil(need_conf / gain) if gain > 0.005 else None
+        left_max = max(0, cfg.max_turns - turns)
+        left_min = max(0, cfg.min_turns - turns)
+        if not cfg.stopping_rule or conf_turns is None:
+            eta = left_max  # no stop rule, or not converging: it stops at the turn limit
+        else:
+            unstable = 1 if st.profile_stability < cfg.stability_threshold else 0
+            eta = min(left_max, max(left_min, conf_turns + unstable))
+        # seconds per turn (participant typing + model time), averaged over recent turns
+        times = self._turn_times
+        if len(times) >= 2:
+            span = min(5, len(times) - 1)
+            per_turn = (times[-1] - times[-1 - span]) / span
+        else:
+            per_turn = 45.0  # planning default until there is data
+
+        def part(value: float, target: float) -> float:
+            return round(min(1.0, value / target) if target else 1.0, 3)
+
+        checks = {
+            "turns": {"value": turns, "target": cfg.min_turns,
+                      "progress": part(turns, cfg.min_turns)},
+            "traits_ready": {"value": ready, "target": cfg.min_traits_above_threshold,
+                             "progress": part(ready, cfg.min_traits_above_threshold),
+                             "per_trait_target": cfg.trait_confidence_threshold},
+            "confidence": {"value": round(avg_conf, 3), "target": cfg.avg_confidence_threshold,
+                           "progress": part(avg_conf, cfg.avg_confidence_threshold)},
+            "stability": {"value": round(st.profile_stability, 3),
+                          "target": cfg.stability_threshold,
+                          "progress": part(st.profile_stability, cfg.stability_threshold)},
+        }
+        overall = min(1.0, max(
+            sum(c["progress"] for c in checks.values()) / len(checks),  # all conditions met
+            turns / cfg.max_turns if cfg.max_turns else 0.0,            # or the turn limit
+        ))
+        return {
+            "overall": round(overall, 3),
+            "checks": checks,
+            "max_turns": cfg.max_turns,
+            "stopping_rule": cfg.stopping_rule,
+            "expected_turns_left": eta,
+            "expected_seconds_left": round(eta * per_turn),
+            "seconds_per_turn": round(per_turn),
+            "converging": conf_turns is not None,
+        }
+
     async def _profile_event(self) -> None:
+        self._conf_history.append(self.state.avg_confidence())
+        self._turn_times.append(time.monotonic())
+        self.last_progress = self._progress()
         await self._emit(
             "profile",
             turn=self.state.turn_count,
+            progress=self.last_progress,
             stability=round(self.state.profile_stability, 3),
             avg_confidence=round(self.state.avg_confidence(), 3),
             traits={

@@ -3,6 +3,14 @@ import { SessionSocket } from "./api";
 import type { ConnState } from "./api";
 import type { SessionEvent, TraitInfo } from "./types";
 
+export interface Check { value: number; target: number; progress: number; per_trait_target?: number }
+export interface Progress {
+  overall: number;
+  checks: { turns: Check; traits_ready: Check; confidence: Check; stability: Check };
+  max_turns: number; stopping_rule: boolean; converging: boolean;
+  expected_turns_left: number; expected_seconds_left: number; seconds_per_turn: number;
+}
+
 export interface ChatMsg { who: "agent" | "participant" | "scenario"; text: string; }
 
 export interface SessionState {
@@ -30,6 +38,7 @@ export interface SessionState {
   plan?: { turn: number; focus: string[]; auto_focus: string[]; note?: string | null; steered: boolean };
   memory: { turn: number; topic: string | null; question: string; answer: string }[];
   rewrites: number;
+  progress?: Progress;
   interventions: { type: string; turn: number; phase: string; at: string; focus?: string[] | null; note?: string | null }[];
 }
 
@@ -94,6 +103,7 @@ export function useSession() {
           ns.traits = e.traits;
           ns.stability = e.stability;
           ns.avgConfidence = e.avg_confidence;
+          if (e.progress) ns.progress = e.progress;
           const row: any = { turn: e.turn };
           for (const [k, v] of Object.entries(e.traits as Record<string, TraitInfo>)) row[k] = v.score;
           ns.convergence = [...s.convergence, row];

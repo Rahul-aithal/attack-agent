@@ -61,6 +61,8 @@ export interface LiveSession {
   participant_messages: number; agent_messages: number; max_turns: number;
   questionnaire_answered: number; questionnaire_submitted: boolean; questionnaire_total: number;
   interventions: number;
+  device?: string | null;
+  progress?: { overall: number; expected_turns_left: number; expected_seconds_left: number } | null;
 }
 
 export async function listSessions(token: string): Promise<LiveSession[]> {
