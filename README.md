@@ -87,6 +87,11 @@ cp deploy.example.yaml deploy.yaml           # set the node IPs
 bash scripts/serve.sh                        # prints the admin token
 ```
 
+**Updating:** `git pull` then `bash scripts/serve.sh` — that's all. The script syncs
+dependencies, repairs a broken `.venv` by itself, always runs the code in `src/`, and rebuilds the
+web UI when it changed. (On macOS, keep the repo outside an iCloud-synced `Documents`/`Desktop`
+folder; iCloud can flag or offload files inside `.venv`.)
+
 Session data is stored in `outputs/attack_agent.db` on the server machine — copy it off after each
 session day. Set a fixed `ATTACK_AGENT_ADMIN_TOKEN` in `.env` so the token survives restarts.
 

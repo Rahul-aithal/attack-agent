@@ -2,5 +2,5 @@
 # Run the developer CLI (one interactive session).
 set -e
 cd "$(dirname "$0")/.."
-uv sync
-uv run attack-agent
+source scripts/_prepare.sh
+exec uv run --no-sync attack-agent

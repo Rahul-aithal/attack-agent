@@ -67,5 +67,3 @@ check_untyped_defs = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/attack_agent"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/attack_agent/config_data/strategy_map.yaml" = "attack_agent/config_data/strategy_map.yaml"
