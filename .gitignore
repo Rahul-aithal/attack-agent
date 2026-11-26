@@ -24,3 +24,6 @@ deploy.yaml
 # Web UI
 web/node_modules/
 web/dist/
+# TypeScript build caches / generated files (differ per machine; macOS writes lower-case paths)
+*.tsbuildinfo
+web/vite.config.d.ts
