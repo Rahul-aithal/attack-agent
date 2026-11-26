@@ -1,5 +1,5 @@
-from attack_agent.engine.llm import LLMClient
-from attack_agent.schemas import Outcome, OutcomeEvaluation, ResistanceSignal, StrategyPrinciple
+from attack_agent.engine.llm import RoleClient
+from attack_agent.schemas import Outcome, OutcomeEvaluation, ResistanceSignal
 from attack_agent.state import AgentState
 
 EVAL_PROMPT = """You are evaluating a participant's reply in a CONTROLLED, ETHICAL research simulation.
@@ -98,7 +98,7 @@ def rule_based_evaluation(response: str) -> OutcomeEvaluation:
 
 
 class OutcomeEvaluator:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: RoleClient):
         self.llm = llm
 
     async def evaluate(

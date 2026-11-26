@@ -7,8 +7,8 @@ from attack_agent.schemas import (
     Phase,
     StrategyPrinciple,
     TraitEstimate,
-    TwinPrediction,
     TurnLog,
+    TwinPrediction,
 )
 
 

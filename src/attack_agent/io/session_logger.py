@@ -1,8 +1,8 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from attack_agent.config import Settings, get_settings
+from attack_agent.config import get_settings
 from attack_agent.state import AgentState
 
 
@@ -12,7 +12,7 @@ def build_session_log(state: AgentState):
     return SessionLog(
         session_id=state.session_id,
         start_time=state.started_at,
-        end_time=datetime.now(timezone.utc),
+        end_time=datetime.now(UTC),
         turn_count=state.turn_count,
         profile={
             name: estimate.score for name, estimate in state.trait_estimates.items()
@@ -41,6 +41,9 @@ def build_session_log(state: AgentState):
         ),
         match_flag=state.match_flag,
         turns=state.turn_logs,
+        questionnaire=state.questionnaire,
+        self_report_scores=state.self_report_scores,
+        completion_reason=state.completion_reason,
     )
 
 

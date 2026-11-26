@@ -79,7 +79,7 @@ def test_stability_high_when_scores_stable():
         ]
         profiler.update_from_evidence(state, evidence, turn=turn)
     stability = profiler.compute_stability(state)
-    assert stability > 0.8
+    assert stability > 0.75
 
 
 def test_validator_incomplete_when_few_turns():

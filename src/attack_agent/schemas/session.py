@@ -6,11 +6,15 @@ from pydantic import BaseModel, Field
 
 class Phase(str, Enum):
     INITIALIZATION = "initialization"
+    CONSENT = "consent"
     PROFILING = "profiling"
     TWIN_HANDOFF = "twin_handoff"
     SIMULATION = "simulation"
     EVALUATION = "evaluation"
+    QUESTIONNAIRE = "questionnaire"
+    DEBRIEF = "debrief"
     COMPLETE = "complete"
+    ABORTED = "aborted"
 
 
 class TurnLog(BaseModel):
@@ -42,3 +46,7 @@ class SessionLog(BaseModel):
     resistance_signals: list[dict] = Field(default_factory=list)
     match_flag: bool | None = None
     turns: list[TurnLog] = Field(default_factory=list)
+    questionnaire: dict | None = None
+    self_report_scores: dict[str, float] = Field(default_factory=dict)
+    inferred_vs_self_report: dict | None = None
+    completion_reason: str = ""

@@ -8,14 +8,25 @@ license = { text = "MIT" }
 dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.3",
-    "ollama>=0.3",
     "rich>=13.7",
     "loguru>=0.7",
     "tenacity>=8.2",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlmodel>=0.0.22",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
 attack-agent = "attack_agent.main:main"
+attack-agent-serve = "attack_agent.server:main"
+attack-agent-eval = "attack_agent.evaluation.run:main"
+
+[project.optional-dependencies]
+analysis = [
+    "matplotlib>=3.11.2",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -23,11 +34,37 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.1",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
+    "ruff>=0.17.4",
+    "types-pyyaml>=6.0.12.20261103",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "B008",   # FastAPI uses function calls (Depends/Header) in argument defaults
+    "B017",   # tests intentionally assert on broad Exception for pydantic validation
+    "E501",   # long lines (prose in prompts/tables) are fine
+    "UP042",  # str+Enum is intentional for JSON serialisation (not StrEnum)
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/attack_agent"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/attack_agent/config_data/strategy_map.yaml" = "attack_agent/config_data/strategy_map.yaml"

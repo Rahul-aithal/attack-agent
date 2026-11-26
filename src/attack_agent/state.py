@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -10,14 +10,14 @@ from attack_agent.schemas import (
     Phase,
     StrategyPrinciple,
     TraitEstimate,
-    TwinPrediction,
     TurnLog,
+    TwinPrediction,
 )
 
 
 class AgentState(BaseModel):
     session_id: str
-    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     phase: Phase = Phase.PROFILING
     turn_count: int = 0
     conversation_history: list[dict[str, str]] = Field(default_factory=list)
@@ -34,6 +34,11 @@ class AgentState(BaseModel):
     real_outcome: Outcome | None = None
     outcome_evaluation: OutcomeEvaluation | None = None
     match_flag: bool | None = None
+    scenario_exchanges: list[dict[str, str]] = Field(default_factory=list)
+    questionnaire: dict | None = None
+    self_report_scores: dict[str, float] = Field(default_factory=dict)
+    consent_given: bool = False
+    aborted: bool = False
 
     def init_traits(self) -> None:
         if not self.trait_estimates:

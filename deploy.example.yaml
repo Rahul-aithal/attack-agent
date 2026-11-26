@@ -1,0 +1,55 @@
+# Model routing across machines. Copy to `deploy.yaml` and edit. If `deploy.yaml` is absent, every
+# role uses the single local Ollama at ATTACK_AGENT_OLLAMA_HOST with ATTACK_AGENT_MODEL_NAME.
+#
+# Each node is one model endpoint. Each role lists `node/model` routes in priority order; the
+# global `fallback` list is appended to every role. If a node fails a health check or a call, the
+# next route is tried. Use a DIFFERENT model family per role (agent / twin / judge) so a model
+# never grades its own output.
+#
+# Make each Ollama reachable on the network:  OLLAMA_HOST=0.0.0.0 ollama serve
+# Tailscale gives each machine a stable address across networks (use the 100.x.y.z IPs below).
+
+nodes:
+  laptop16:                     # 16 GB laptop — heavier 7-8B models
+    kind: ollama
+    url: http://100.100.0.11:11434
+  macbook8:                     # 8 GB MacBook — small 3-4B models
+    kind: ollama
+    url: http://100.100.0.12:11434
+  host:                         # host machine (runs API + UI + SQLite)
+    kind: ollama
+    url: http://localhost:11434
+
+  # Optional cloud fallback (BYOK). The key is read from the named environment variable; it is
+  # never written to disk or logs. Omit these nodes entirely if you don't use cloud.
+  openai:
+    kind: openai
+    api_key_env: OPENAI_API_KEY
+  anthropic:
+    kind: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+  gemini:
+    kind: gemini
+    api_key_env: GEMINI_API_KEY
+
+roles:
+  agent:            # conversation + scenario actor (larger model helps)
+    - laptop16/llama3.1:8b
+    - host/llama3.2:3b
+  extractor:        # signal extraction (benefits from a capable but cheap model)
+    - laptop16/llama3.1:8b
+    - host/llama3.2:3b
+  twin:             # digital twin persona (different family from the agent)
+    - macbook8/qwen2.5:3b
+    - host/gemma2:2b
+  judge:            # outcome/questionnaire classification (yet another family)
+    - host/gemma2:2b
+    - macbook8/qwen2.5:3b
+  sim_participant:  # synthetic participants for evaluation (different family from the agent)
+    - macbook8/qwen2.5:3b
+
+# Appended to every role as a last resort. Point at a reliable local model or a cloud node.
+fallback:
+  - host/llama3.2:3b
+  # - anthropic/claude-haiku-5-5
+  # - openai/gpt-4o-mini

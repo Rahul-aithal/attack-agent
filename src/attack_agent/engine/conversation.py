@@ -1,4 +1,4 @@
-from attack_agent.engine.llm import LLMClient
+from attack_agent.engine.llm import RoleClient
 from attack_agent.state import AgentState
 
 TRAIT_TOPIC_HINTS = {
@@ -31,7 +31,7 @@ a light conversation (e.g., how their day is going). No quotes, no labels."""
 
 
 class ConversationEngine:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: RoleClient):
         self.llm = llm
 
     async def generate_opening(self) -> str:
@@ -47,7 +47,7 @@ class ConversationEngine:
         focus = [name for _, name in uncertain[:2]]
         return focus
 
-    async def generate_reply(self, state: AgentState) -> str:
+    def _reply_messages(self, state: AgentState) -> list[dict[str, str]]:
         focus = self._focus_traits(state)
         hints = "; ".join(TRAIT_TOPIC_HINTS[t] for t in focus) if focus else (
             "whatever keeps the conversation flowing naturally"
@@ -60,5 +60,11 @@ class ConversationEngine:
             focus=hints,
             history=history_text or "(conversation just started)",
         )
-        messages = [{"role": "system", "content": system}] + state.conversation_history[-10:]
-        return await self.llm.chat_text(messages)
+        return [{"role": "system", "content": system}] + state.conversation_history[-10:]
+
+    async def generate_reply(self, state: AgentState) -> str:
+        return await self.llm.chat_text(self._reply_messages(state))
+
+    def stream_reply(self, state: AgentState):
+        """Async iterator of reply tokens (for live token streaming to a UI)."""
+        return self.llm.stream(self._reply_messages(state))

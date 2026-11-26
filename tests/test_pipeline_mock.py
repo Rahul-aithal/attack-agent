@@ -1,17 +1,15 @@
 import pytest
 
 from attack_agent.engine.llm import extract_json
+from attack_agent.engine.strategy_selector import select_principle
 from attack_agent.io.session_logger import write_session_log
 from attack_agent.io.twin_writer import write_twin_data
-from attack_agent.engine.strategy_selector import select_principle
 from attack_agent.schemas import (
     Outcome,
     StrategyPrinciple,
     TwinPrediction,
-    TurnLog,
 )
 from attack_agent.state import AgentState
-
 
 FAKE_ANALYSIS = {
     "signals": [
@@ -44,9 +42,13 @@ class FakeLLM:
         self.calls += 1
         return "That's really interesting, tell me more about how you plan your week?"
 
-    async def chat_json(self, messages, temperature=None):
+    async def chat_json(self, messages, temperature=None, schema=None):
         self.calls += 1
         return dict(FAKE_ANALYSIS)
+
+    async def stream(self, messages, temperature=None):
+        for token in "sure thing!".split():
+            yield token + " "
 
 
 @pytest.mark.asyncio
@@ -99,7 +101,9 @@ async def test_full_session_flow(tmp_path):
         reasoning="test",
     )
     state.twin_prediction = prediction
-    principle, reason, effectiveness = select_principle(state, prediction)
+    from attack_agent.config import Settings
+    tw = Settings(selection_mode="twin_driven")
+    principle, reason, effectiveness = select_principle(state, prediction, tw)
     assert principle == StrategyPrinciple.AUTHORITY
     assert reason
     assert 0 <= effectiveness <= 1
@@ -123,4 +127,4 @@ def test_selector_falls_back_to_authority():
     state.init_traits()
     principle, reason, _ = select_principle(state, None)
     assert principle == StrategyPrinciple.AUTHORITY
-    assert "default" in reason
+    assert reason

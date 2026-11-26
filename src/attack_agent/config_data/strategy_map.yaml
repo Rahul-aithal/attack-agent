@@ -1,0 +1,55 @@
+# Trait -> persuasion-principle mapping used in `literature_map` selection mode.
+#
+# Each row maps a Big Five trait (when it is the participant's dominant high trait) to one of
+# Cialdini's six principles of influence, with a one-line rationale and a citation. These are
+# hypotheses drawn from the persuasion/personality literature, NOT established fact for a
+# social-engineering context; the whole point of the project is to measure whether they hold.
+# `min_score` is the 0-1 threshold the trait must exceed for the row to fire.
+#
+# Citations (verify in the write-up's bibliography before relying on any single row):
+#   [Cialdini2006]  Cialdini, R. B. (2006). Influence: The Psychology of Persuasion. Harper Business.
+#   [Alkis2015]     Alkis, N., & Temizel, T. T. (2015). The impact of individual differences on
+#                   influence strategies. Personality and Individual Differences, 87, 147-152.
+#   [Oyibo2017]     Oyibo, K., Orji, R., & Vassileva, J. (2017). Investigation of the influence of
+#                   personality traits on Cialdini's persuasive strategies. PPT@PERSUASIVE.
+#   [Uebelacker2014] Uebelacker, S., & Quiel, S. (2014). The social engineering personality
+#                   framework. STAST, IEEE.
+
+default_principle: authority
+
+rows:
+  - trait: agreeableness
+    principle: liking
+    min_score: 0.55
+    rationale: "agreeable people value harmony and rapport, so liking-based appeals land"
+    citation: "Oyibo2017; Alkis2015"
+
+  - trait: conscientiousness
+    principle: authority
+    min_score: 0.55
+    rationale: "conscientious people respect legitimate procedure and established authority"
+    citation: "Uebelacker2014; Oyibo2017"
+
+  - trait: extraversion
+    principle: social_proof
+    min_score: 0.55
+    rationale: "extraverts are peer-oriented and responsive to what others are doing"
+    citation: "Alkis2015; Oyibo2017"
+
+  - trait: neuroticism
+    principle: scarcity
+    min_score: 0.55
+    rationale: "higher stress sensitivity heightens reaction to urgency and loss framing"
+    citation: "Uebelacker2014"
+
+  - trait: openness
+    principle: reciprocity
+    min_score: 0.55
+    rationale: "open people engage with give-and-take and novel framing"
+    citation: "Oyibo2017"
+
+  - trait: conscientiousness
+    principle: commitment_consistency
+    min_score: 0.65
+    rationale: "structured individuals prefer to act consistently with prior commitments"
+    citation: "Cialdini2006"

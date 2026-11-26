@@ -13,3 +13,14 @@ wheels/
 outputs/
 twin_prediction.txt
 .env
+
+# Deployment config with node addresses (may contain private IPs)
+deploy.yaml
+
+# SQLite databases
+*.db
+*.db-journal
+
+# Web UI
+web/node_modules/
+web/dist/

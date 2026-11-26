@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from attack_agent.config import get_settings
@@ -63,7 +63,7 @@ def write_twin_data(state: AgentState, output_dir=None) -> Path:
         "DIGITAL TWIN HANDOFF DATA — EDGECLONE ATTACK AGENT",
         "=" * 64,
         f"SESSION_ID: {state.session_id}",
-        f"TIMESTAMP: {datetime.now(timezone.utc).isoformat()}",
+        f"TIMESTAMP: {datetime.now(UTC).isoformat()}",
         f"CONVERSATION_TURNS: {state.turn_count}",
         f"PROFILE_STABILITY: {state.profile_stability:.3f}",
         f"AVG_TRAIT_CONFIDENCE: {state.avg_confidence():.3f}",

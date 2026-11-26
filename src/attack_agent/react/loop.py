@@ -1,20 +1,23 @@
 from attack_agent.engine.conversation import ConversationEngine
-from attack_agent.engine.evaluator import OutcomeEvaluator
-from attack_agent.engine.llm import LLMClient
-from attack_agent.engine.profiler import PersonalityProfiler
+from attack_agent.engine.llm import RoleClient, Router
+from attack_agent.engine.profiler import make_profiler
 from attack_agent.engine.signal_extractor import SignalExtractor
-from attack_agent.engine.strategy_selector import select_principle
 from attack_agent.engine.validator import ProfileValidator
 from attack_agent.schemas import BehavioralEvidence, Phase, TurnLog
 from attack_agent.state import AgentState
 
 
 class ReActLoop:
-    def __init__(self, llm: LLMClient):
-        self.llm = llm
-        self.signal_extractor = SignalExtractor(llm)
-        self.conversation = ConversationEngine(llm)
-        self.profiler = PersonalityProfiler()
+    def __init__(self, router: "Router | RoleClient"):
+        # Accept a Router (preferred) or a single RoleClient (tests / single-role use).
+        if isinstance(router, Router):
+            agent = RoleClient(router, "agent")
+            extractor = RoleClient(router, "extractor")
+        else:
+            agent = extractor = router
+        self.conversation = ConversationEngine(agent)
+        self.signal_extractor = SignalExtractor(extractor)
+        self.profiler = make_profiler()
         self.validator = ProfileValidator()
 
     async def observe(self, state: AgentState, user_message: str) -> dict:

@@ -1,3 +1,8 @@
+"""Developer CLI: a thin client over SessionEngine. The web UI is the primary deliverable; this
+stays as a quick local driver for one interactive session."""
+
+from __future__ import annotations
+
 import asyncio
 import sys
 
@@ -7,128 +12,87 @@ from rich.panel import Panel
 from rich.table import Table
 
 from attack_agent.config import get_settings
-from attack_agent.engine.evaluator import OutcomeEvaluator
-from attack_agent.engine.llm import LLMClient, LLMError
-from attack_agent.engine.simulator import ScenarioSimulator
-from attack_agent.engine.strategy_selector import select_principle
-from attack_agent.io.session_logger import write_session_log
-from attack_agent.io.twin_reader import read_twin_prediction
-from attack_agent.io.twin_writer import write_twin_data
-from attack_agent.react.loop import ReActLoop
-from datetime import datetime
-
-from attack_agent.schemas import Outcome, Phase, StrategyPrinciple, TwinPrediction
-from attack_agent.state import AgentState
+from attack_agent.engine.llm import Router
+from attack_agent.engine.session_engine import SessionEngine
+from attack_agent.storage import persist_session
 
 console = Console()
 
-BANNER = """[bold magenta]
- █████╗ ████████╗████████╗ █████╗  ██████╗██╗  ██╗    █████╗  ██████╗ ███████╗███╗   ██╗████████╗
-██╔══██╗╚══██╔══╝╚══██╔══╝██╔══██╗██╔════╝██║  ██║   ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
-███████║   ██║      ██║   ███████║██║     ███████║   ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║
-██╔══██║   ██║      ██║   ██╔══██║██║     ██╔══██║   ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║
-██║  ██║   ██║      ██║   ██║  ██║╚██████╗██║  ██║██╗██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║
-╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝
-[/bold magenta]
-[dim]Conversational Profiling & Controlled Susceptibility Simulation — SE-AgentSim/EdgeClone[/dim]"""
+BANNER = "[bold magenta]ATTACK AGENT[/bold magenta] — Conversational Profiling & Controlled Susceptibility Simulation"
 
 CONSENT = """[bold yellow]ETHICS & CONSENT NOTICE[/bold yellow]
 This is a [bold]controlled academic research simulation[/bold] (Final Year Project).
-- The conversation is analyzed to build a personality profile.
-- A [bold]harmless simulated scenario[/bold] (no credentials, no real links, no malware) may follow.
+- The conversation is analysed to build a personality profile.
+- A [bold]harmless simulated scenario[/bold] (no credentials, real links, or malware) may follow.
+- A short personality questionnaire is given afterwards.
 - All data stays local. You may quit anytime with [bold]/quit[/bold].
-- A full session log is written to [bold]outputs/[/bold] for research analysis.
 By continuing you consent to participate in this simulation study."""
 
-HELP_TEXT = "[dim]Commands: /status (show profile) | /quit (end session)[/dim]"
 
-
-def profile_panel(state: AgentState) -> Panel:
+def profile_panel(state) -> Panel:
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
     table.add_column("Trait", style="cyan", min_width=18)
-    table.add_column("Score", min_width=8)
-    table.add_column("Confidence", min_width=10)
-    table.add_column("Evidence", min_width=8)
-    for name, estimate in state.trait_estimates.items():
-        bar = "█" * int(estimate.score * 10) + "░" * (10 - int(estimate.score * 10))
-        table.add_row(
-            name,
-            f"{estimate.score:.2f} {bar}",
-            f"{estimate.confidence:.2f}",
-            str(estimate.evidence_count),
-        )
-    title = f"[bold]Big Five Profile[/bold] — turn {state.turn_count} | stability {state.profile_stability:.2f} | avg confidence {state.avg_confidence():.2f}"
+    table.add_column("Score", min_width=16)
+    table.add_column("Conf", min_width=6)
+    table.add_column("Ev", min_width=4)
+    for name, est in state.trait_estimates.items():
+        filled = int(est.score * 10)
+        bar = "█" * filled + "░" * (10 - filled)
+        table.add_row(name, f"{est.score:.2f} {bar}", f"{est.confidence:.2f}", str(est.evidence_count))
+    title = (
+        f"Big Five — turn {state.turn_count} | stability {state.profile_stability:.2f}"
+        f" | avg conf {state.avg_confidence():.2f}"
+    )
     return Panel(table, title=title, border_style="dim")
 
 
-async def healthcheck(llm: LLMClient) -> bool:
-    try:
-        models = await llm.list_models()
-    except Exception as exc:
+async def _check_router(router: Router) -> bool:
+    status = await router.status()
+    healthy = [n for n in status if n["healthy"]]
+    if not healthy:
         console.print(
             Panel(
-                "[bold red]Cannot reach Ollama.[/bold red]\n\n"
-                "1. Install Ollama:\n   [cyan]curl -fsSL https://ollama.com/install.sh | sh[/cyan]\n"
-                "2. Start the server:\n   [cyan]ollama serve[/cyan]\n"
-                "3. Pull the model:\n   [cyan]ollama pull llama3.2:3b[/cyan]\n"
-                "4. Re-run: [cyan]uv run attack-agent[/cyan]",
-                title="Ollama not available",
+                "[bold red]No model node is reachable.[/bold red]\n\n"
+                "Single machine: start Ollama and pull a model:\n"
+                "  [cyan]bash scripts/install_ollama.sh[/cyan]\n\n"
+                "Multi-machine: check deploy.yaml node URLs and that each Ollama is bound to\n"
+                "the network ([cyan]OLLAMA_HOST=0.0.0.0 ollama serve[/cyan]).",
+                title="No nodes available",
                 border_style="red",
             )
         )
-        logger.error("ollama unreachable: {}", exc)
         return False
-    model_name = get_settings().model_name
-    if not any(model_name in name for name in models):
-        console.print(
-            Panel(
-                f"[yellow]Model [bold]{model_name}[/bold] not found.[/yellow]\nRun: [cyan]ollama pull {model_name}[/cyan]",
-                title="Model missing",
-                border_style="yellow",
-            )
-        )
-        return False
+    console.print(f"[dim]Nodes up: {', '.join(n['node'] for n in healthy)}[/dim]")
     return True
 
 
-def get_user_input() -> str | None:
+def _read_input() -> str | None:
     try:
         return console.input("[bold cyan]You:[/bold cyan] ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
 
 
-def request_twin_prediction(state: AgentState) -> TwinPrediction:
-    settings = get_settings()
-    prediction = read_twin_prediction(settings.output_dir / "twin_prediction.txt")
-    if prediction:
-        console.print(f"[green]Loaded twin prediction from outputs/twin_prediction.txt[/green]")
-        return prediction
-
+def _ask_questionnaire(items: list[dict]) -> dict[int, int]:
     console.print(
         Panel(
-            "[yellow]outputs/twin_prediction.txt not found.[/yellow]\n\n"
-            "For the demo you can create it manually (from your Digital Twin) or press [bold]Enter[/bold] to use a default placeholder prediction.\n\n"
-            "[dim]Expected format:\nPREDICTED_OUTCOME: PARTIAL\nPREDICTION_CONFIDENCE: 0.78\nPRINCIPLES_USED: [\"authority\"]\nREASONING: why the twin predicts this[/dim]",
-            title="Twin prediction",
-            border_style="yellow",
+            "Rate each statement 1-5 (1=very inaccurate, 5=very accurate). "
+            "Press Enter to skip an item (counts as neutral 3).",
+            title="Personality questionnaire (IPIP-50)",
+            border_style="cyan",
         )
     )
-    answer = console.input("[bold]Press Enter for default, or type 'wait' to create the file:[/bold] ").strip().lower()
-    if answer == "wait":
+    responses: dict[int, int] = {}
+    for item in items:
         while True:
-            console.input("[dim]Create outputs/twin_prediction.txt then press Enter...[/dim]")
-            prediction = read_twin_prediction(settings.output_dir / "twin_prediction.txt")
-            if prediction:
-                return prediction
-            console.print("[red]Still not found or unparseable. Try again.[/red]")
-    console.print("[dim]Using default placeholder prediction (PARTIAL, authority).[/dim]")
-    return TwinPrediction(
-        predicted_outcome=Outcome.PARTIAL,
-        prediction_confidence=0.6,
-        principles_used=[StrategyPrinciple.AUTHORITY],
-        reasoning="placeholder prediction (no Digital Twin connected yet)",
-    )
+            raw = console.input(f"[cyan]{item['id']:>2}.[/cyan] I {item['text']} ").strip()
+            if not raw:
+                break
+            if raw.isdigit() and 1 <= int(raw) <= 5:
+                responses[item["id"]] = int(raw)
+                break
+            console.print("[red]Enter 1-5 or press Enter to skip.[/red]")
+    return responses
 
 
 async def run_session() -> None:
@@ -138,140 +102,92 @@ async def run_session() -> None:
     logger.remove()
     logger.add(settings.log_dir / "attack_agent_{time}.log", rotation="10 MB", level="DEBUG")
 
-    console.print(BANNER)
+    console.print(Panel(BANNER, border_style="magenta"))
     console.print(Panel(CONSENT, border_style="yellow"))
-    console.print(HELP_TEXT)
 
-    llm = LLMClient(settings)
-    if not await healthcheck(llm):
+    router = Router.from_settings(settings)
+    if not await _check_router(router):
+        await router.aclose()
         sys.exit(1)
 
-    session_id = f"sess_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    state = AgentState(session_id=session_id)
-    state.init_traits()
-    loop = ReActLoop(llm)
+    engine = SessionEngine(router, settings=settings)
+    pending_questionnaire: list[dict] = []
 
-    console.print("\n[bold green]Profiling phase started. Chat naturally with Alex.[/bold green]\n")
-
-    opening = await loop.conversation.generate_opening()
-    console.print(f"[bold green]Alex:[/bold green] {opening}")
-    loop.log_agent_turn(state, opening, "start_conversation")
-
-    while state.phase == Phase.PROFILING:
-        user_input = get_user_input()
-        if user_input is None or user_input.lower() in ("/quit", "quit", "exit"):
-            console.print("[yellow]Session ended by participant.[/yellow]")
-            state.real_outcome = Outcome.INCOMPLETE
-            log_path = write_session_log(state)
-            console.print(f"[dim]Session log saved to {log_path}[/dim]")
-            return
-        if user_input.lower() == "/status":
-            console.print(profile_panel(state))
-            continue
-        if not user_input:
-            continue
-
-        result = await loop.process_turn(state, user_input)
-        console.print(f"[bold green]Alex:[/bold green] {result['agent_reply']}")
-        loop.log_agent_turn(state, result["agent_reply"], "continue_conversation")
-        console.print(profile_panel(state))
-
-        if result["profile_complete"]:
-            console.print(
-                Panel(
-                    f"[bold]Profile complete.[/bold]\n{result['completion_reason']}",
-                    border_style="green",
+    try:
+        async for event in engine.events():
+            etype = event["type"]
+            if etype == "phase_change":
+                console.print(f"[dim]— phase: {event['phase']} —[/dim]")
+            elif etype == "agent_message":
+                console.print(f"[bold green]Alex:[/bold green] {event['text']}")
+            elif etype == "profile":
+                console.print(profile_panel(engine.state))
+            elif etype == "await_message":
+                if event.get("context") == "scenario":
+                    console.print("[dim](reply to the message above; /quit to abort)[/dim]")
+                text = _read_input()
+                if text is None or text.lower() in ("/quit", "quit", "exit"):
+                    engine.abort()
+                elif text.lower() == "/status":
+                    console.print(profile_panel(engine.state))
+                    engine.submit_message("")  # no-op; re-prompt
+                else:
+                    engine.submit_message(text)
+            elif etype == "scenario_message":
+                console.print(
+                    Panel(
+                        event["message"],
+                        title=f"Incoming message — principle: {event['principle']}",
+                        border_style="red",
+                    )
                 )
-            )
-            break
-
-    loop.set_phase(state, Phase.TWIN_HANDOFF)
-    twin_path = write_twin_data(state)
-    state.twin_data_written = True
-    console.print(Panel(f"[bold]twin_data.txt written:[/bold] {twin_path}\n[dim]This is the handoff artifact for the Digital Twin Generator.[/dim]", border_style="magenta"))
-
-    state.twin_prediction = request_twin_prediction(state)
-
-    principle, reason, predicted_effectiveness = select_principle(state, state.twin_prediction)
-    state.current_principle = principle
-    console.print(
-        Panel(
-            f"[bold]Scenario principle:[/bold] {principle.value}\n"
-            f"[bold]Selection reason:[/bold] {reason}\n"
-            f"[bold]Predicted effectiveness:[/bold] {predicted_effectiveness:.2f}\n"
-            f"[bold]Twin predicted outcome:[/bold] {state.twin_prediction.predicted_outcome.value} "
-            f"(confidence {state.twin_prediction.prediction_confidence:.2f})",
-            title="Strategy selection",
-            border_style="cyan",
-        )
-    )
-
-    loop.set_phase(state, Phase.SIMULATION)
-    simulator = ScenarioSimulator(llm)
-    scenario_message = await simulator.generate_scenario_message(state, principle)
-    state.scenario_message = scenario_message
-    console.print("\n[bold red]── Controlled simulation scenario ──[/bold red]")
-    console.print(Panel(scenario_message, title="Incoming message (simulated actor)", border_style="red"))
-    loop.log_agent_turn(state, scenario_message, f"run_scenario:{principle.value}")
-    console.print("[dim](Reply to the message above as you naturally would. /quit to abort.)[/dim]\n")
-
-    response = get_user_input()
-    if response is None or response.lower() in ("/quit", "quit", "exit"):
-        state.real_outcome = Outcome.INCOMPLETE
-        state.outcome_evaluation = None
-    else:
-        state.turn_count += 1
-        state.conversation_history.append({"role": "user", "content": response})
-        evaluator = OutcomeEvaluator(llm)
-        evaluation = await evaluator.evaluate(state, scenario_message, response)
-        state.outcome_evaluation = evaluation
-        state.real_outcome = evaluation.outcome
-        console.print(
-            Panel(
-                f"[bold]Outcome:[/bold] {evaluation.outcome.value}\n"
-                f"[bold]Confidence:[/bold] {evaluation.confidence:.2f}\n"
-                f"[bold]Rationale:[/bold] {evaluation.rationale}\n"
-                + (
-                    "[bold]Resistance:[/bold] "
-                    + "; ".join(f"{s.signal_type} ({s.confidence:.2f})" for s in evaluation.resistance_signals)
-                    if evaluation.resistance_signals
-                    else "[bold]Resistance:[/bold] none detected"
-                ),
-                title="Outcome evaluation",
-                border_style="blue",
-            )
-        )
-
-    loop.set_phase(state, Phase.EVALUATION)
-    if state.real_outcome and state.twin_prediction:
-        state.match_flag = state.real_outcome == state.twin_prediction.predicted_outcome
-
-    log_path = write_session_log(state)
-    loop.set_phase(state, Phase.COMPLETE)
-
-    summary = Table(show_header=True, header_style="bold")
-    summary.add_column("Metric")
-    summary.add_column("Value")
-    summary.add_row("Session", state.session_id)
-    summary.add_row("Turns", str(state.turn_count))
-    summary.add_row("Principle used", state.current_principle.value if state.current_principle else "n/a")
-    summary.add_row("Twin prediction", state.twin_prediction.predicted_outcome.value if state.twin_prediction else "n/a")
-    summary.add_row("Real outcome", state.real_outcome.value if state.real_outcome else "n/a")
-    summary.add_row(
-        "Match flag",
-        "[bold green]TRUE[/bold green]" if state.match_flag else "[bold red]FALSE[/bold red]",
-    )
-    console.print(Panel(summary, title="Session summary", border_style="magenta"))
-    console.print(f"[dim]Session log: {log_path}[/dim]")
-
-    console.print(
-        Panel(
-            "[bold]DEBRIEF:[/bold] This conversation was part of a controlled academic research simulation. "
-            "The scenario was fictional and harmless; no real credentials or data were collected. "
-            "Thank you for participating.",
-            border_style="yellow",
-        )
-    )
+            elif etype == "twin_prediction":
+                console.print(
+                    Panel(
+                        f"predicted: {event['predicted_outcome']} "
+                        f"(conf {event['confidence']:.2f})\n{event['reasoning']}",
+                        title="Digital twin prediction",
+                        border_style="cyan",
+                    )
+                )
+            elif etype == "outcome":
+                match = event.get("match_flag")
+                color = "green" if match else "red"
+                console.print(
+                    Panel(
+                        f"real outcome: [bold]{event.get('real_outcome')}[/bold]\n"
+                        f"twin predicted: {event.get('twin_outcome')}\n"
+                        f"match: [bold {color}]{match}[/bold {color}]",
+                        title="Outcome",
+                        border_style="blue",
+                    )
+                )
+            elif etype == "await_questionnaire":
+                pending_questionnaire = event["items"]
+                engine.submit_questionnaire(_ask_questionnaire(pending_questionnaire))
+            elif etype == "questionnaire_result":
+                comp = event.get("comparison") or {}
+                console.print(
+                    Panel(
+                        f"answered {event['answered']}/50 — inferred-vs-self-report "
+                        f"MAE: {comp.get('mae')}",
+                        title="Self-report comparison",
+                        border_style="cyan",
+                    )
+                )
+            elif etype == "debrief":
+                console.print(Panel(event["message"], title="Debrief", border_style="yellow"))
+            elif etype == "aborted":
+                console.print("[yellow]Session aborted.[/yellow]")
+            elif etype == "error":
+                console.print(f"[red]Error: {event['message']}[/red]")
+    finally:
+        try:
+            persist_session(engine.state, llm_calls=router.calls, settings=settings)
+            console.print(f"[dim]Saved to database ({settings.database_url}).[/dim]")
+        except Exception as exc:
+            logger.warning("persist failed: {}", exc)
+        await router.aclose()
 
 
 def main() -> None:

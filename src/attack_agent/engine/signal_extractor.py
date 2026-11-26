@@ -1,5 +1,31 @@
-from attack_agent.engine.llm import LLMClient
-from attack_agent.schemas import BehavioralEvidence
+from attack_agent.config import Settings, get_settings
+from attack_agent.engine.llm import RoleClient
+from attack_agent.schemas import ALL_TRAITS, BehavioralEvidence
+
+# JSON schema for providers that support native constrained output (Ollama/OpenAI/Gemini).
+ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "signals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "trait": {"type": "string", "enum": list(ALL_TRAITS)},
+                    "signal": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["high", "low"]},
+                    "evidence_strength": {"type": "number"},
+                    "interpretation": {"type": "string"},
+                },
+                "required": ["trait", "direction", "evidence_strength"],
+            },
+        },
+        "tone": {"type": "string"},
+        "engagement": {"type": "number"},
+        "resistance": {"type": "array", "items": {"type": "object"}},
+    },
+    "required": ["signals", "tone", "engagement"],
+}
 
 ANALYSIS_PROMPT = """You are a behavioral signal extractor for a research chat system.
 Analyze the user message below for Big Five personality evidence.
@@ -78,6 +104,18 @@ FALLBACK_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
+LOW_FALLBACK_KEYWORDS: dict[str, list[str]] = {
+    "agreeableness": ["no", "won't", "refuse", "annoying", "stupid", "hate", "not helping"],
+    "conscientiousness": ["whatever", "lazy", "forgot", "messy", "last minute", "wing it",
+                           "don't plan", "procrastinate"],
+    "openness": ["boring", "same as always", "not interested", "stick to", "routine",
+                 "don't like change", "traditional"],
+    "extraversion": ["alone", "by myself", "quiet", "stay home", "avoid people", "shy",
+                     "introvert", "drained"],
+    "neuroticism": ["calm", "relaxed", "no worries", "chill", "easygoing", "not stressed",
+                    "unbothered"],
+}
+
 POSITIVE_RESISTANCE_KEYWORDS = [
     "scam",
     "phishing",
@@ -96,45 +134,45 @@ POSITIVE_RESISTANCE_KEYWORDS = [
 ]
 
 
-def keyword_fallback(user_message: str, turn: int) -> dict:
+def keyword_fallback(user_message: str, turn: int, min_hits: int = 2) -> dict:
+    """Symmetric keyword heuristic: detects both high- and low-trait signals."""
     text = user_message.lower()
     signals = []
-    for trait, keywords in FALLBACK_KEYWORDS.items():
-        hits = sum(1 for kw in keywords if kw in text)
-        if hits >= 2:
-            signals.append(
-                {
-                    "trait": trait,
-                    "signal": f"keyword pattern: {trait}",
-                    "direction": "high",
-                    "evidence_strength": min(0.7, 0.45 + 0.1 * hits),
-                    "interpretation": "detected via keyword fallback",
-                }
-            )
+    for direction, table in (("high", FALLBACK_KEYWORDS), ("low", LOW_FALLBACK_KEYWORDS)):
+        for trait, keywords in table.items():
+            hits = sum(1 for kw in keywords if kw in text)
+            if hits >= min_hits:
+                signals.append(
+                    {
+                        "trait": trait,
+                        "signal": f"keyword pattern: {trait} ({direction})",
+                        "direction": direction,
+                        "evidence_strength": min(0.7, 0.45 + 0.1 * hits),
+                        "interpretation": "detected via keyword fallback",
+                    }
+                )
     engagement = min(1.0, len(user_message.split()) / 40)
     return {"signals": signals, "tone": "neutral", "engagement": engagement, "resistance": []}
 
 
-def normalize_analysis(data: dict | None, user_message: str, turn: int) -> dict:
+def normalize_analysis(
+    data: dict | None, user_message: str, turn: int, min_strength: float = 0.4, min_hits: int = 2
+) -> dict:
     if not isinstance(data, dict):
-        return keyword_fallback(user_message, turn)
+        return keyword_fallback(user_message, turn, min_hits)
     signals = []
     for item in data.get("signals") or []:
+        if not isinstance(item, dict):
+            continue
         trait = item.get("trait")
-        if trait not in (
-            "openness",
-            "conscientiousness",
-            "extraversion",
-            "agreeableness",
-            "neuroticism",
-        ):
+        if trait not in ALL_TRAITS:
             continue
         try:
             strength = float(item.get("evidence_strength", 0.5))
         except (TypeError, ValueError):
             strength = 0.5
         strength = min(1.0, max(0.0, strength))
-        if strength < 0.4:
+        if strength < min_strength:
             continue
         signals.append(
             {
@@ -170,10 +208,15 @@ def normalize_analysis(data: dict | None, user_message: str, turn: int) -> dict:
 
 
 class SignalExtractor:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: RoleClient, settings: Settings | None = None):
         self.llm = llm
+        self.settings = settings or get_settings()
 
     async def analyze(self, user_message: str, history: list[dict[str, str]], turn: int) -> dict:
+        min_strength = self.settings.min_evidence_strength
+        min_hits = self.settings.keyword_min_hits
+        if self.settings.extractor_mode == "keyword":
+            return keyword_fallback(user_message, turn, min_hits)
         history_text = "\n".join(
             f"{'User' if m['role'] == 'user' else 'Agent'}: {m['content']}"
             for m in history[-6:-1]
@@ -181,11 +224,15 @@ class SignalExtractor:
         prompt = ANALYSIS_PROMPT.format(
             message=user_message, history=history_text or "(start of conversation)"
         )
-        data = await self.llm.chat_json(
-            [{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        return normalize_analysis(data, user_message, turn)
+        try:
+            data = await self.llm.chat_json(
+                [{"role": "user", "content": prompt}],
+                temperature=self.settings.analysis_temperature,
+                schema=ANALYSIS_SCHEMA,
+            )
+        except Exception:
+            data = None
+        return normalize_analysis(data, user_message, turn, min_strength, min_hits)
 
     def to_evidence(self, analysis: dict, turn: int) -> list[BehavioralEvidence]:
         return [
