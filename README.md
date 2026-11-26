@@ -8,9 +8,10 @@ prediction with the real outcome. A self-report questionnaire taken afterwards p
 truth for measuring profiling accuracy.
 
 > Defensive framing. Every scenario is fictional and harmless: the only task ever asked is to
-> "open a simulated portal and confirm a laptop asset ID". **No** passwords, OTPs, payment details,
-> or real links are ever involved — a safety filter rejects and regenerates any message that tries.
-> Every session has a consent step and a debrief; data stays on the study's own machines.
+> "open a simulated page and reply with the number on the sticker on the bottom of your laptop"
+> (its asset ID). **No** passwords, OTPs, payment details, or real links are ever involved — a
+> safety filter rejects and regenerates any message that tries. Every session has a consent step
+> and a debrief; data stays on the study's own machines.
 
 ---
 

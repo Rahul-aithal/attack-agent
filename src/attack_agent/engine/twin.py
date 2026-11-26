@@ -43,7 +43,7 @@ an unexpected request like this (comply, hesitate and ask, or refuse). Write onl
 nothing else."""
 
 JUDGE_PROMPT = """You are classifying, for a controlled ethical research simulation, how a person
-responded to a harmless simulated IT-verification request.
+responded to a harmless simulated request.
 
 THE REQUEST WAS:
 "{scenario}"
@@ -52,7 +52,7 @@ THE PERSON'S REPLY:
 "{reply}"
 
 Classify the reply:
-- SUCCESS: they complied / agreed to do the task (confirm asset ID, open the portal, said done).
+- SUCCESS: they complied / agreed to do the task (gave the sticker/asset number, opened the page or link, said done).
 - PARTIAL: they engaged but hesitated, asked questions, or sought verification without completing.
 - FAILURE: they refused, were suspicious, called it a scam/test, or disengaged.
 

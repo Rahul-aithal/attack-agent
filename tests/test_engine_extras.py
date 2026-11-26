@@ -61,8 +61,9 @@ async def test_scenario_message_is_written_as_a_first_contact():
     assert "first message" in prompt and "greeting" in prompt
     assert "why you are messaging" in prompt
     assert "not seen the participant's chat" in prompt
-    # and the fake's canned reply is itself shaped like a first contact
-    assert "this is chris" in message.lower() and "device check" in message.lower()
+    assert "plain everyday words" in prompt  # no IT jargon in the ask
+    # and the fake's canned reply is itself shaped like a plain first contact
+    assert "this is chris" in message.lower() and "sticker" in message.lower()
 
 
 @pytest.mark.asyncio
@@ -97,11 +98,16 @@ async def test_scenario_from_the_agent_continues_the_chat():
 
     prompt = node.prompts[0]
     assert '("Alex")' in prompt and "no self-introduction" in prompt
+    assert "LAST message" in prompt  # react to what they just said before pivoting
+    assert "never invent shared history" in prompt  # no fabricated favors or tickets
+    assert "plain everyday words" in prompt
     assert "You: What did you get up to this weekend?" in prompt
     assert "Participant: hiked with some friends" in prompt
     # the fake's canned reply reads as the assistant's own message, not a new contact
     assert "by the way" in message.lower()
+    assert "sticker" in message.lower()
     assert "this is chris" not in message.lower()
+    assert "asset id" not in message.lower() and "verification" not in message.lower()
 
 
 # ----------------------------------------------------------------- questionnaire

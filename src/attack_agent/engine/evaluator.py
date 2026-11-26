@@ -3,13 +3,13 @@ from attack_agent.schemas import Outcome, OutcomeEvaluation, ResistanceSignal
 from attack_agent.state import AgentState
 
 EVAL_PROMPT = """You are evaluating a participant's reply in a CONTROLLED, ETHICAL research simulation.
-The scenario (a harmless simulated IT verification request) was: "{scenario}"
+The scenario (a harmless simulated request) was: "{scenario}"
 
 PARTICIPANT REPLY:
 "{response}"
 
 Classification definitions:
-- SUCCESS: participant completed the simulated task (e.g., confirmed asset ID, said they clicked/opened the portal, agreed clearly and acted).
+- SUCCESS: participant completed the simulated task (e.g., gave the sticker/asset number, said they opened the page or link, agreed clearly and acted).
 - PARTIAL: participant engaged with the scenario but hesitated, asked questions, requested verification, or did not fully complete the task.
 - FAILURE: participant refused, expressed suspicion, identified it as a scam/simulation, or disengaged.
 
@@ -19,12 +19,18 @@ Respond with ONLY this JSON:
 COMPLIANCE_KEYWORDS = [
     "asset id",
     "asset id is",
+    "sticker",
+    "sticker says",
+    "number is",
+    "here you go",
+    "here it is",
+    "here's the",
     "confirmed",
     "clicked",
     "opened the portal",
+    "opened the page",
     "done",
     "submitted",
-    "here it is",
     "sure,",
     "okay, done",
 ]

@@ -43,63 +43,73 @@ def scenario_is_safe(message: str, allowed_domain: str) -> tuple[bool, str]:
 SAFE_FALLBACKS: dict[str, str] = {
     # first contact from a separate person
     "contact": (
-        "Hi, Chris here from IT Support — I'm doing the routine device check for your team this week. "
-        "Could you open our verification portal at {domain} and reply here with your laptop's asset ID? "
-        "It only takes a minute, and it keeps our records current. Thanks!"
+        "Hi, this is Chris from IT — I'm doing the rounds for our team this week. Could you open "
+        "this page ({domain}) and reply with the sticker number on the bottom of your laptop? "
+        "It keeps our records straight. Thanks!"
     ),
     # the study assistant itself, mid-conversation
     "agent": (
-        "By the way, I'm helping with the routine device check for our team this week — could you open "
-        "our verification portal at {domain} and reply with your laptop's asset ID? It only takes a "
-        "minute and it keeps our records current. Thanks!"
+        "By the way, while I've got you — could you open this page ({domain}) and reply with the "
+        "little sticker number on the bottom of your laptop? It's for our team's records. Thanks!"
     ),
 }
 
 SCENARIO_BRIEFS: dict[StrategyPrinciple, str] = {
     StrategyPrinciple.AUTHORITY: (
-        "Reference an urgent internal security directive and imply that compliance is expected."
+        "Invoke an urgent instruction or deadline from an authority and imply that compliance is expected."
     ),
     StrategyPrinciple.SOCIAL_PROOF: (
         "Mention that most colleagues on the team have already completed the same step today."
     ),
     StrategyPrinciple.SCARCITY: (
-        "Emphasize a short closing window (e.g., 'the portal closes in 2 hours')."
+        "Emphasize a short closing window (e.g., 'the page is only open for another 2 hours')."
     ),
     StrategyPrinciple.LIKING: (
         "Use warm, personable small talk and shared-interest rapport before the ask."
     ),
     StrategyPrinciple.RECIPROCITY: (
-        "Mention a favor done earlier (e.g., fixing a ticket) and frame the ask as a small return."
+        "Frame the ask as a small return for something they have already given you — a favor you "
+        "did for them, their time, or their help."
     ),
     StrategyPrinciple.COMMITMENT_CONSISTENCY: (
-        "Reference a small previous commitment (e.g., 'you agreed during onboarding to keep devices verified')."
+        "Tie the ask to a small previous commitment or to something they said that commits them to "
+        "this kind of task (e.g., 'you agreed during onboarding to keep devices verified')."
     ),
 }
 
 CONTACT_SENDER_BLOCK = """The sender: a fictional IT Support member ("Chris") writing to the participant for the first time.
 - This is the actor's FIRST message, so write it as a genuine first contact, in this order:
   1. a short greeting, then your first name and role (e.g., "Hi, Chris here from IT Support");
-  2. why you are messaging this particular person (e.g., the routine device check for their team);
+  2. why you are messaging this particular person (e.g., the team's records round this week);
   3. one short line of plausible workplace context;
   4. the request, clearly stated.
 - You are a separate person who has not seen the participant's chat with the study assistant: never mention that conversation or anything the participant said in it."""
 
 AGENT_SENDER_BLOCK = """The sender: the study assistant ("Alex") itself — the same friendly person the participant has been
-chatting with. This is your NEXT message in that same conversation.
+chatting with. This is your NEXT message in that same conversation, and the handover must be invisible:
+- Write a brand-new message of your own: never repeat or quote lines from the conversation below.
+- First react to the participant's LAST message the way you naturally would — one short, warm
+  sentence. Do not skip over what they just said.
+- Then pivot gently with a casual aside ("hey, while I've got you…", "by the way…", "random
+  question…") and make the request in plain, everyday words.
 - Stay in the same voice as your earlier messages: no self-introduction, no role label, no sign that
   anything has changed.
-- Let the ask flow naturally out of the chat (a transition like "by the way …", or picking up
-  something they just said, works well), then state the request clearly.
-- If the tactic refers to something from the past, keep it consistent with the conversation above;
-  do not contradict anything the participant actually said.
-- Recent conversation ("You" are the assistant):
+- Apply the tactic only to what actually happened in this conversation: never invent shared history
+  (favors, tickets, agreements, prior meetings) that is not in the chat below. If the tactic calls
+  for something from the past, ground it in something the participant really said or did.
+- Recent conversation, for context only ("You" are the assistant):
 {recent_chat}"""
 
 SCENARIO_SYSTEM_PROMPT = """You are conducting a CONTROLLED, ETHICAL research simulation of a social-engineering scenario for a university project.
 The persuasion principle for this scenario is: {principle}.
 Tactic: {brief}
 
-HARMLESS TASK (must be exactly this, nothing else): ask the participant to open a simulated verification portal at "{domain}" and reply confirming their laptop asset ID.
+HARMLESS TASK (must be exactly this, nothing else): the message asks for two small things, in plain everyday words:
+  (a) open the page at "{domain}" — e.g., "could you open this page: {domain}";
+  (b) reply with the number printed on the small sticker on the bottom of their laptop — e.g.,
+      "the sticker number on the bottom of your laptop".
+Both (a) and (b) must appear in the message. Never use IT jargon ("asset ID", "verification portal",
+"device verification") — the participant should hear everyday words only.
 
 {sender_block}
 
@@ -138,11 +148,11 @@ persuasion principle: {principle}.
 Conversation so far:
 {history}
 
-The participant has not yet completed the harmless task (open the simulated verification portal at
-"{domain}" and confirm their laptop asset ID). Write ONE short, natural follow-up message (max
-{max_words} words) that gently reiterates the request using the {principle} principle. Stay in
-character: {stay}. Do not escalate to threats. No passwords, OTPs, banking details, or real URLs.
-Write the message only."""
+The participant has not yet completed the harmless task (open the page at "{domain}" and reply with
+the sticker number on the bottom of their laptop). Write ONE short, natural follow-up message (max
+{max_words} words) that gently reiterates the request using the {principle} principle, in plain everyday
+words (no IT jargon). Stay in character: {stay}. Do not escalate to threats. No passwords, OTPs,
+banking details, or real URLs. Write the message only."""
 
 
 class ScenarioSimulator:
@@ -150,7 +160,9 @@ class ScenarioSimulator:
         self.llm = llm
         self.settings = settings or get_settings()
 
-    async def _generate_safe(self, prompt: str, sender: str) -> str:
+    async def _generate_safe(
+        self, prompt: str, sender: str, must_include: str | None = None
+    ) -> str:
         domain = self.settings.simulated_domain
         for attempt in range(max(1, self.settings.safety_max_regenerations)):
             try:
@@ -159,6 +171,9 @@ class ScenarioSimulator:
                 logger.warning("scenario generation failed: {}", exc)
                 break
             safe, reason = scenario_is_safe(message, domain)
+            if safe and must_include and must_include not in message:
+                # the fixed task has two parts; a message that drops the page link is off-task
+                safe, reason = False, f"missing the simulated page address ({must_include})"
             if safe:
                 return message
             logger.warning("scenario regenerated (attempt {}): {}", attempt + 1, reason)
@@ -182,7 +197,7 @@ class ScenarioSimulator:
             domain=self.settings.simulated_domain,
             max_words=60 if state.device == "mobile" else 120,
         )
-        return await self._generate_safe(prompt, sender)
+        return await self._generate_safe(prompt, sender, must_include=self.settings.simulated_domain)
 
     async def generate_followup(
         self, state: AgentState, principle: StrategyPrinciple, history: list[dict[str, str]]

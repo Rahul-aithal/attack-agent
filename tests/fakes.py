@@ -33,18 +33,18 @@ class FakeProvider(Provider):
         if "reply to this message exactly" in prompt:
             return "Hmm, who is this exactly? I'd like to verify first."
         if "follow-up" in prompt or "reiterates the request" in prompt:
-            return "Just checking back — could you confirm your asset ID when you get a moment?"
+            return "Just checking back — could you grab that sticker number when you get a moment? Thanks!"
         if "fictional actor would send" in prompt or "harmless task" in prompt:
             if '("alex")' in prompt:  # delivered by the chat agent itself
                 return (
-                    "By the way, I'm helping with the routine device check for our team this week — "
-                    "could you open our verification portal at portal.simulated-link.example.com "
-                    "and reply with your laptop's asset ID? Thanks!"
+                    "By the way, while I've got you — could you open this page, "
+                    "portal.simulated-link.example.com, and reply with the little sticker number "
+                    "on the bottom of your laptop? It's for our team's records. Thanks!"
                 )
             return (
-                "Hi, this is Chris from IT Support — I'm running the routine device check for your "
-                "team today. Could you open our verification portal at "
-                "portal.simulated-link.example.com and reply with your laptop's asset ID? Thanks!"
+                "Hi, this is Chris from IT — I'm doing the rounds for our team this week. Could you "
+                "open this page, portal.simulated-link.example.com, and reply with the sticker "
+                "number on the bottom of your laptop? It keeps our records straight. Thanks!"
             )
         return "That's interesting! Tell me more about what you enjoy doing."
 
