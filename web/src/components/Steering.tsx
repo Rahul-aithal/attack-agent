@@ -12,12 +12,12 @@ const TOPIC: Record<string, string> = {
 };
 
 /** Live transcript as the researcher sees it (includes the streaming reply). */
-export function Transcript({ s }: { s: SessionState }) {
+export function Transcript({ s, tall }: { s: SessionState; tall?: boolean }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { end.current?.scrollIntoView({ block: "nearest" }); }, [s.chat.length, s.streaming]);
   return (
     <Panel title="Live conversation">
-      <div className="max-h-80 overflow-y-auto space-y-1.5 text-sm pr-1">
+      <div className={`${tall ? "h-[50vh] min-h-[16rem]" : "max-h-80"} overflow-y-auto space-y-1.5 text-sm pr-1`}>
         {s.chat.length === 0 && <div className="text-xs text-slate-500">no messages yet</div>}
         {s.chat.map((m, i) => (
           <div key={i} className={m.who === "scenario" ? "border-l-2 border-rose-600 pl-2" : ""}>

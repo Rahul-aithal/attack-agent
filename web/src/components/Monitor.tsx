@@ -88,11 +88,11 @@ const ROLE_LABEL: Record<string, string> = {
   agent: "chat agent", extractor: "signal extractor", twin: "digital twin", judge: "judge", sim_participant: "simulated participant",
 };
 
-export function ModelActivity({ llm, sessionFilter }: { llm: { active: any[]; recent: any[]; totals: any[] }; sessionFilter?: string }) {
+export function ModelActivity({ llm, sessionFilter, compact }: { llm: { active: any[]; recent: any[]; totals: any[] }; sessionFilter?: string; compact?: boolean }) {
   const now = useNow(500);
   const pick = (c: any) => !sessionFilter || c.session_id === sessionFilter;
   const active = llm.active.filter(pick);
-  const recent = llm.recent.filter(pick).slice(0, 12);
+  const recent = llm.recent.filter(pick).slice(0, compact ? 5 : 12);
   return (
     <Panel title="Model activity (live)">
       <div className="space-y-1 mb-3">
@@ -119,7 +119,7 @@ export function ModelActivity({ llm, sessionFilter }: { llm: { active: any[]; re
           </div>
         ))}
       </div>
-      {llm.totals.length > 0 && !sessionFilter && (
+      {llm.totals.length > 0 && !sessionFilter && !compact && (
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-slate-500"><tr><th className="text-left font-normal">role → node/model</th><th className="text-right font-normal">calls</th><th className="text-right font-normal">avg</th><th className="text-right font-normal">fail</th></tr></thead>
@@ -136,6 +136,47 @@ export function ModelActivity({ llm, sessionFilter }: { llm: { active: any[]; re
           </table>
         </div>
       )}
+    </Panel>
+  );
+}
+
+/** One line per laptop: enough to spot trouble at a glance during a session. */
+export function MachinesCompact({ machines }: { machines: any[] }) {
+  const now = useNow(2000);
+  const pct = (a?: number | null, b?: number | null) => (a != null && b ? Math.round((100 * a) / b) : null);
+  const cell = (v: number | null | undefined) => (
+    <span className={`font-mono ${v == null ? "text-slate-600" : v > 90 ? "text-rose-400" : v > 70 ? "text-amber-300" : "text-slate-300"}`}>
+      {v == null ? "–" : `${Math.round(v)}%`}
+    </span>
+  );
+  return (
+    <Panel title="Machines">
+      {machines.length === 0 && <div className="text-xs text-slate-500">no monitor running (see README → Monitoring)</div>}
+      <table className="w-full text-xs">
+        {machines.length > 0 && (
+          <thead className="text-slate-500"><tr>
+            <th className="text-left font-normal">laptop</th><th className="font-normal">CPU</th><th className="font-normal">RAM</th>
+            <th className="font-normal">GPU</th><th className="font-normal">VRAM</th><th className="text-left font-normal pl-2">model</th>
+          </tr></thead>
+        )}
+        <tbody>
+          {machines.map((m) => {
+            const stale = (now - (m._rx ?? now)) / 1000 > 10;
+            const g = m.gpus?.[0];
+            const model = m.ollama?.models?.[0];
+            return (
+              <tr key={m.name} className={stale ? "opacity-50" : ""}>
+                <td className="py-0.5"><span className={stale ? "text-rose-400" : "text-emerald-400"}>●</span> {m.name}</td>
+                <td className="text-center">{cell(m.cpu_pct)}</td>
+                <td className="text-center">{cell(pct(m.ram_used_mb, m.ram_total_mb))}</td>
+                <td className="text-center">{cell(g?.util_pct)}</td>
+                <td className="text-center">{cell(pct(g?.vram_used_mb, g?.vram_total_mb))}</td>
+                <td className="pl-2 truncate max-w-[9rem] text-slate-400">{model ? `${model.name}` : m.ollama?.reachable === false ? <span className="text-rose-400">ollama down</span> : "idle"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </Panel>
   );
 }

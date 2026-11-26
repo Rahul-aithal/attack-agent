@@ -4,10 +4,10 @@ import type { ConnState, LiveSession } from "../api";
 import type { SessionState } from "../useSession";
 import { useSession } from "../useSession";
 import { Convergence, TraitRadar } from "./charts";
-import { MachinesPanel, ModelActivity } from "./Monitor";
+import { MachinesCompact, MachinesPanel, ModelActivity } from "./Monitor";
 import { Memory, Steering, Transcript } from "./Steering";
 import { PreviousSessions } from "./History";
-import { PhaseStepper, ProfilingProgress, Tabs, roughTime } from "./SessionView";
+import { PhaseStepper, ProfilingProgress, roughTime } from "./SessionView";
 import { Badge, Button, Input, Panel } from "./ui";
 
 const ROLES = ["agent", "extractor", "twin", "judge", "sim_participant"];
@@ -265,39 +265,32 @@ export function Researcher() {
         </div>
 
         {authed && (
-          <Tabs tabs={[
-            {
-              key: "sessions", label: "Sessions", badge: feed.sessions.filter((r) => !r.finished).length,
-              content: (
-                <>
-                  <Panel title="Live now">
-                    <LiveSessions rows={feed.sessions} denied={feed.denied} onAttach={attach} token={token} />
-                  </Panel>
-                  <PreviousSessions token={token} onOpen={attach}
-                    refreshKey={feed.sessions.map((r) => `${r.session_id}:${r.phase}:${r.finished}`).join(",")} />
-                </>
-              ),
-            },
-            {
-              key: "system", label: "Machines & models",
-              badge: feed.nodes.filter((n) => !n.healthy || n.models_missing?.length).length || undefined,
-              content: (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="space-y-4"><NodeStatus nodes={feed.nodes} /><ModelActivity llm={feed.llm} /></div>
-                  <MachinesPanel machines={feed.machines} />
-                </div>
-              ),
-            },
-            {
-              key: "settings", label: "Settings",
-              content: (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <Settings token={token} onChange={refreshNodes} />
-                  <Experiments token={token} experiments={experiments} onChange={refreshExp} />
-                </div>
-              ),
-            },
-          ]} />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 space-y-4">
+              <Panel title="Live now">
+                <LiveSessions rows={feed.sessions} denied={feed.denied} onAttach={attach} token={token} />
+              </Panel>
+              <PreviousSessions token={token} onOpen={attach}
+                refreshKey={feed.sessions.map((r) => `${r.session_id}:${r.phase}:${r.finished}`).join(",")} />
+            </div>
+            <div className="space-y-4">
+              <NodeStatus nodes={feed.nodes} />
+              <MachinesCompact machines={feed.machines} />
+              <ModelActivity llm={feed.llm} compact />
+            </div>
+          </div>
+        )}
+        {authed && (
+          <Section title="More: full machine stats, model totals, routing & experiments">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <MachinesPanel machines={feed.machines} />
+              <div className="space-y-4">
+                <ModelActivity llm={feed.llm} />
+                <Settings token={token} onChange={refreshNodes} />
+                <Experiments token={token} experiments={experiments} onChange={refreshExp} />
+              </div>
+            </div>
+          </Section>
         )}
       </div>
     );
@@ -329,74 +322,77 @@ export function Researcher() {
 
       {code && !watched?.participant_connected && (watched?.turn_count ?? 0) === 0 && <JoinCard code={code} />}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2"><ProfilingProgress s={state} /></div>
-        {watched && (
-          <div className="grid grid-cols-3 lg:grid-cols-1 gap-2 text-center lg:text-left">
-            <Stat label="participant replies" value={`${watched.participant_messages}`} />
-            <Stat label="agent messages" value={`${watched.agent_messages}`} />
-            <Stat label="questionnaire" value={`${watched.questionnaire_answered}/${watched.questionnaire_total}`}
-              sub={watched.questionnaire_submitted ? "submitted" : state.phase === "questionnaire" ? "in progress" : "not started"} />
-          </div>
-        )}
+      {/* the live screen: everything that changes during a session, visible at once */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+        <div className="lg:col-span-5 space-y-4">
+          <Transcript s={state} tall />
+          {watched && (
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <Stat label="participant replies" value={`${watched.participant_messages}`} />
+              <Stat label="agent messages" value={`${watched.agent_messages}`} />
+              <Stat label="questionnaire" value={`${watched.questionnaire_answered}/${watched.questionnaire_total}`}
+                sub={watched.questionnaire_submitted ? "submitted" : state.phase === "questionnaire" ? "in progress" : "not started"} />
+            </div>
+          )}
+        </div>
+        <div className="lg:col-span-4 space-y-4">
+          <ProfilingProgress s={state} />
+          <TwinPanel s={state} />
+        </div>
+        <div className="lg:col-span-3 space-y-4">
+          <Panel title="Big Five (live)"><TraitRadar traits={state.traits} selfReport={state.selfReport} /></Panel>
+          <ModelActivity llm={feed.llm} sessionFilter={sessionId} compact />
+          <MachinesCompact machines={feed.machines} />
+        </div>
       </div>
 
-      <Tabs tabs={[
-        {
-          key: "chat", label: "Conversation", badge: state.chat.length,
-          content: (
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-              <div className="lg:col-span-3 space-y-4"><Transcript s={state} /><Memory s={state} /></div>
-              <div className="lg:col-span-2 space-y-4"><Steering s={state} steer={steer} finishProfiling={finishProfiling} /></div>
-            </div>
-          ),
-        },
-        {
-          key: "profile", label: "Personality",
-          content: (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <Panel title="Big Five — inferred vs self-report"><TraitRadar traits={state.traits} selfReport={state.selfReport} /></Panel>
-              <Panel title="How the scores settled, reply by reply">
-                {state.convergence.length > 1 ? <Convergence history={state.convergence} />
-                  : <div className="text-sm text-slate-500 py-8 text-center">appears after two replies</div>}
-              </Panel>
-              <Panel title="Evidence (latest first)" className="lg:col-span-2">
-                <div className="max-h-60 overflow-y-auto text-xs grid grid-cols-1 sm:grid-cols-2 gap-x-6">
-                  {state.evidence.map((e, i) => (
-                    <div key={i} className="flex justify-between border-b border-line/60 py-1">
-                      <span className="text-slate-300 capitalize">{e.trait}</span>
-                      <span className={e.delta >= 0 ? "text-emerald-400" : "text-rose-400"}>{e.signal}</span>
-                    </div>
-                  ))}
-                  {state.evidence.length === 0 && <div className="text-slate-500">no evidence yet</div>}
+      {/* hands-on controls, still on the same screen */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        <Steering s={state} steer={steer} finishProfiling={finishProfiling} />
+        <Memory s={state} />
+      </div>
+
+      <Section title="More: score history, evidence, decision trace, routing & machines">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Panel title="How the scores settled, reply by reply">
+            {state.convergence.length > 1 ? <Convergence history={state.convergence} />
+              : <div className="text-sm text-slate-500 py-8 text-center">appears after two replies</div>}
+          </Panel>
+          <Panel title="Evidence (latest first)">
+            <div className="max-h-72 overflow-y-auto text-xs">
+              {state.evidence.map((e, i) => (
+                <div key={i} className="flex justify-between border-b border-line/60 py-1">
+                  <span className="text-slate-300 capitalize">{e.trait}</span>
+                  <span className={e.delta >= 0 ? "text-emerald-400" : "text-rose-400"}>{e.signal}</span>
                 </div>
-              </Panel>
+              ))}
+              {state.evidence.length === 0 && <div className="text-slate-500">no evidence yet</div>}
             </div>
-          ),
-        },
-        {
-          key: "twin", label: "Twin & outcome", badge: state.twin ? "✓" : undefined,
-          content: (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="lg:col-span-2"><TwinPanel s={state} /></div>
-              <Panel title="Decision trace">
-                <div className="text-xs font-mono text-slate-400 max-h-80 overflow-y-auto space-y-1">
-                  {state.trace.slice(-40).map((t, i) => <div key={i}>{t}</div>)}
-                </div>
-              </Panel>
+          </Panel>
+          <Panel title="Decision trace">
+            <div className="text-xs font-mono text-slate-400 max-h-72 overflow-y-auto space-y-1">
+              {state.trace.slice(-60).map((x, i) => <div key={i}>{x}</div>)}
             </div>
-          ),
-        },
-        {
-          key: "system", label: "Models & machines",
-          content: (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="space-y-4"><ModelActivity llm={feed.llm} sessionFilter={sessionId} /><NodeStatus nodes={nodes} /></div>
-              <MachinesPanel machines={feed.machines} />
-            </div>
-          ),
-        },
-      ]} />
+          </Panel>
+          <div className="space-y-4"><NodeStatus nodes={nodes} /><ModelActivity llm={feed.llm} sessionFilter={sessionId} /></div>
+          <div className="lg:col-span-2"><MachinesPanel machines={feed.machines} /></div>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+/** A folded section for detail that isn't needed while watching live. Remembers open/closed. */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const key = `section:${title}`;
+  const [open, setOpen] = useState(() => localStorage.getItem(key) === "1");
+  return (
+    <div className="rounded-xl border border-line">
+      <button className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-slate-300 hover:text-white"
+        onClick={() => { setOpen(!open); localStorage.setItem(key, open ? "0" : "1"); }}>
+        <span>{title}</span><span className="text-slate-500">{open ? "▲ hide" : "▼ show"}</span>
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
     </div>
   );
 }
