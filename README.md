@@ -139,7 +139,7 @@ uv run python -m analysis.ablations --key profiler_version
 uv sync
 uv run pytest           # 43 tests, fully offline (fake model provider)
 uv run ruff check src tests analysis
-cd web && npm install && npm run build
+cd web && bun install && bun run build
 ```
 
 ## Ethics

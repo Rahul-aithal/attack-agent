@@ -255,7 +255,7 @@ def create_app() -> FastAPI:
                 {
                     "service": "attack-agent",
                     "docs": "/docs",
-                    "note": "web UI not built; run `npm run build` in web/ or use the CLI",
+                    "note": "web UI not built; run `bun run build` in web/ or use the CLI",
                 }
             )
 
